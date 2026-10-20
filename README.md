@@ -18,6 +18,20 @@ npm start               # http://127.0.0.1:3000
 
 Open the page, go through setup, then tap the mic and talk. Lei listens until you pause, answers, and starts listening again once it has finished speaking. To cut it off, tap the figure or press Esc.
 
+## What it can do on your computer
+
+In companion mode, Lei is a JARVIS-style assistant for the computer it runs on. Ask it things like "how much disk space do I have?", "find the invoice from March", "what's in my downloads folder?", "remind me to call Ana at six", or "what's the weather in Monterrey?":
+
+- **Check the computer:** operating system, uptime, memory, free disk space.
+- **Look through files:** list folders, find files by name, and read text files under your home folder (or `LEI_WORKSPACE`).
+- **Open things:** web pages in your browser, and folders in the file manager.
+- **Reminders:** it says them out loud when they're due, and shows a desktop notification if the tab is in the background. A reminder that comes due while the page is closed is said the next time you open it.
+- **Search the web** and read pages, for anything current.
+
+It shows a short line while it works ("Reading ~/notes.txt").
+
+**It looks but doesn't touch.** Lei can't run commands, write, move or delete files, or launch apps. It won't read files that hold keys or passwords (`.ssh`, `.aws`, `.env`, `*.pem`, and similar). The server only answers its own page, so another website can't send it requests. Turn the computer tools off with `LEI_COMPUTER=off`, or web search with `LEI_WEB=off`.
+
 ## Practice mode
 
 `LEI_MODE=practice` turns Lei into an English speaking partner for Portuguese or Spanish speakers:
@@ -40,6 +54,8 @@ All settings are environment variables, read from `.env` if it exists:
 | `ANTHROPIC_API_KEY` | none | Claude credentials. Not needed if you've run `ant auth login`. |
 | `LEI_MODE` | `companion` | `companion` or `practice` (see above). |
 | `LEI_NATIVE_LANG` / `LEI_TARGET_LANG` | `es-MX` / `en-US` | Practice mode: the learner's language and the one being practised. |
+| `LEI_COMPUTER` / `LEI_WEB` | on / on | Set to `off` to turn off the computer tools or web search (companion mode). |
+| `LEI_WORKSPACE` | your home folder | The folder Lei may look through. |
 | `LEI_MODEL` | `claude-opus-5-5` | The Claude model. Haiku 5.5 costs about 40 times less per turn; test quality before switching. |
 | `LEI_EFFORT` | `low` | How much the model thinks before answering. Higher is deeper but slower to reply. |
 | `PORT` / `HOST` | `3000` / `127.0.0.1` | Where the server listens. Keep it on localhost: anyone who can reach it spends your Claude credits. |
@@ -50,7 +66,7 @@ All settings are environment variables, read from `.env` if it exists:
 ## Privacy
 
 - Your conversation, Lei's notes about you, and its name are stored in one JSON file on this computer (`data/state.json`). **Settings → Start over** deletes it. You can read or remove any single memory under **Memories**.
-- What you say is sent to Claude to generate the reply.
+- What you say is sent to Claude to generate the reply, and so are the contents of any file Lei reads and its web searches.
 - Speech recognition is done by your browser. Chrome sends the audio to Google's speech service; Safari uses Apple's.
 - With ElevenLabs configured, the replies' text is sent to ElevenLabs to be spoken.
 

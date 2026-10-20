@@ -11,12 +11,16 @@ import {
   practiceNamingPrompt,
   practicePrompt,
 } from "./prompt.ts";
+import os from "node:os";
+import { type Activity, displayPath } from "./computer.ts";
 import { type Store, addCorrection, addMemory } from "./store.ts";
-import { runTool, toolsFor } from "./tools.ts";
-import type { Correction, Memory, Song } from "./types.ts";
+import { COMPUTER_TOOL_NAMES, runComputerTool, runTool, toolsFor } from "./tools.ts";
+import type { Correction, Memory, Reminder, Song } from "./types.ts";
 
-/** Most model rounds one reply may take (each tool call costs a round). */
-const MAX_ROUNDS = 6;
+/** Most model rounds one reply may take (each round of tool calls costs one). */
+const MAX_ROUNDS = 24;
+
+const OS_NAMES: Record<string, string> = { darwin: "Mac", win32: "Windows", linux: "Linux" };
 
 type Block = Anthropic.Beta.BetaContentBlock;
 
@@ -45,6 +49,8 @@ export interface TurnHandlers {
   memory(memory: Memory): void;
   song(song: Song): void;
   correction(correction: Correction): void;
+  activity(activity: Activity): void;
+  reminderSet(reminder: Reminder): void;
 }
 
 export interface TurnResult {
@@ -70,12 +76,25 @@ export async function runTurn(opts: {
   const { client, config, store, signal, on } = opts;
   const state = await store.load();
   const practice = config.mode === "practice";
-  const persona = practice ? practicePrompt(state.profile!, config.practice) : personaPrompt(state.profile!);
+  const computer = !practice && config.computer;
+  const web = !practice && config.web;
+  const persona = practice
+    ? practicePrompt(state.profile!, config.practice)
+    : personaPrompt(state.profile!, {
+        computer: computer ? { os: OS_NAMES[process.platform] ?? os.type(), root: displayPath(config.workspace) } : undefined,
+        web,
+      });
   const system: Anthropic.Beta.BetaTextBlockParam[] = [
     { type: "text", text: persona, cache_control: { type: "ephemeral" } },
     { type: "text", text: contextPrompt(state, new Date()) },
   ];
-  const tools = toolsFor(config.mode);
+  const tools = toolsFor(config.mode, { computer, web, model: config.model });
+  const agentDeps = {
+    computer: { root: config.workspace, platform: process.platform },
+    store,
+    activity: on.activity,
+    reminderSet: on.reminderSet,
+  };
   const messages = historyMessages(state);
   if (opts.nudge) messages.push({ role: "user", content: opts.nudge });
 
@@ -89,14 +108,21 @@ export async function runTurn(opts: {
       { ...base(config), max_tokens: 16000, system, messages, tools },
       { signal },
     );
-    stream.on("text", (delta) => {
-      if (!roundText && text) {
+    stream.on("text", (delta, snapshot) => {
+      // A new text block (after a tool call, or in a new round): keep it apart from the last one.
+      if (delta === snapshot && text && !text.endsWith("\n")) {
         text += "\n\n";
         on.text("\n\n");
       }
       roundText += delta;
       text += delta;
       on.text(delta);
+    });
+    stream.on("contentBlock", (block) => {
+      if (block.type !== "server_tool_use") return;
+      const input = (block.input ?? {}) as { query?: unknown; url?: unknown };
+      if (block.name === "web_search") on.activity({ kind: "search", target: String(input.query ?? "") });
+      if (block.name === "web_fetch") on.activity({ kind: "fetch", target: String(input.url ?? "") });
     });
 
     let message: Anthropic.Beta.BetaMessage;
@@ -115,6 +141,11 @@ export async function runTurn(opts: {
 
     if (message.stop_reason === "refusal") return { text: "", end: "refused" };
     const content = echoable(message.content);
+    // A long web search pauses the turn; send it back as is and the model carries on.
+    if (message.stop_reason === "pause_turn") {
+      messages.push({ role: "assistant", content });
+      continue;
+    }
     const calls = content.filter((b): b is Anthropic.Beta.BetaToolUseBlock => b.type === "tool_use");
     if (message.stop_reason !== "tool_use" || calls.length === 0) {
       return { text, song, end: message.stop_reason === "max_tokens" ? "truncated" : "done" };
@@ -123,7 +154,9 @@ export async function runTurn(opts: {
     messages.push({ role: "assistant", content });
     const results: Anthropic.Beta.BetaToolResultBlockParam[] = [];
     for (const call of calls) {
-      const outcome = runTool(call.name, call.input);
+      const outcome = COMPUTER_TOOL_NAMES.has(call.name)
+        ? await runComputerTool(call.name, call.input, agentDeps)
+        : runTool(call.name, call.input);
       if (outcome.fact) {
         let saved: Memory | null = null;
         await store.update((s) => {

@@ -1,3 +1,4 @@
+import os from "node:os";
 import path from "node:path";
 
 export type Effort = "low" | "medium" | "high" | "xhigh" | "max";
@@ -17,6 +18,11 @@ export const config = {
     /** The language being practised: speech recognition and the voice use it. */
     target: env.LEI_TARGET_LANG ?? "en-US",
   },
+  // Companion mode only: read-only looks at this computer, reminders, and web search.
+  computer: env.LEI_COMPUTER !== "off",
+  web: env.LEI_WEB !== "off",
+  /** The folder Lei may look through. */
+  workspace: path.resolve(env.LEI_WORKSPACE ?? os.homedir()),
   port: Number(env.PORT ?? 3000),
   // Bound to localhost by default: the server spends your Claude credits for anyone who can reach it.
   host: env.HOST ?? "127.0.0.1",

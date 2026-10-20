@@ -116,6 +116,8 @@ button { cursor: pointer; }
   background: var(--veil); border: 1px solid var(--hair); border-radius: 999px;
 }
 .song svg { width: 14px; height: 14px; flex: none; }
+.activity { display: block; margin-top: 8px; font-family: var(--font-ui); font-size: 13px; letter-spacing: .02em; color: var(--ink-soft); }
+.activity::before { content: ""; display: inline-block; width: 6px; height: 6px; margin-right: 8px; border-radius: 50%; background: var(--ink); vertical-align: middle; animation: blink 1.3s ease-in-out infinite; }
 .aside { display: block; margin-top: 6px; font-family: var(--font-ui); font-style: normal; font-size: 15px; line-height: 1.45; color: var(--ink-soft); }
 .fix {
   align-self: flex-end; max-width: min(82%, 28rem); margin-top: -10px; padding: 10px 14px; border-radius: 14px;

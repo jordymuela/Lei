@@ -1,7 +1,10 @@
 import type Anthropic from "@anthropic-ai/sdk";
 import { normalizeSong, songSeconds } from "../public/js/lib/notes.js";
+import { type Activity, type ComputerContext, ToolError, findFiles, listDirectory, openTarget, readTextFile, systemStatus } from "./computer.ts";
 import type { Mode } from "./config.ts";
-import type { Song } from "./types.ts";
+import { parseDue } from "./reminders.ts";
+import { type Store, addReminder } from "./store.ts";
+import type { Reminder, Song } from "./types.ts";
 
 // Inputs stream in as they're written (eager_input_streaming), so the API no
 // longer validates them against the schema; runTool checks every field itself.
@@ -60,9 +63,79 @@ const CORRECT: Anthropic.Beta.BetaTool = {
   },
 };
 
-/** The tools Claude gets in each mode. */
-export function toolsFor(mode: Mode): Anthropic.Beta.BetaTool[] {
-  return mode === "practice" ? [REMEMBER, CORRECT] : [REMEMBER, COMPOSE];
+// The computer tools: read-only looks at the machine the server runs on,
+// plus reminders. See computer.ts for what each may touch.
+const tool = (name: string, description: string, properties: Record<string, unknown>, required: string[] = []): Anthropic.Beta.BetaTool => ({
+  name,
+  description,
+  eager_input_streaming: true,
+  input_schema: { type: "object", properties, required },
+});
+
+const COMPUTER: Anthropic.Beta.BetaTool[] = [
+  tool("system_status", "Check this computer: operating system, uptime, memory, free disk space and load. Returns JSON.", {}),
+  tool(
+    "list_directory",
+    "List a folder's contents with sizes and modification times. Paths can be absolute, relative to the allowed root, or start with ~.",
+    { path: { type: "string", description: "Folder to list, e.g. ~/Downloads" } },
+    ["path"],
+  ),
+  tool(
+    "find_files",
+    "Find files and folders whose name contains some text, searching subfolders (hidden folders and node_modules are skipped). Returns up to 50 paths.",
+    {
+      query: { type: "string", description: "Part of the name, e.g. invoice or .pdf" },
+      path: { type: "string", description: "Folder to start from; defaults to the allowed root" },
+    },
+    ["query"],
+  ),
+  tool(
+    "read_file",
+    "Read a text file (up to 20,000 characters). Files that hold keys or passwords are refused.",
+    {
+      path: { type: "string" },
+      max_chars: { type: "number", description: "Read at most this many characters" },
+    },
+    ["path"],
+  ),
+  tool(
+    "open",
+    "Open a web page (https://...) in the default browser, or a folder in the file manager. Files and apps can't be opened.",
+    { target: { type: "string", description: "A URL or a folder path" } },
+    ["target"],
+  ),
+  tool(
+    "set_reminder",
+    "Set a reminder that the app will say out loud when it's due. Give either in_minutes or at.",
+    {
+      text: { type: "string", description: "What to remind them of, in a few words" },
+      in_minutes: { type: "number", description: "Minutes from now" },
+      at: { type: "string", description: "Local date-time, e.g. 2026-10-21T08:30" },
+    },
+    ["text"],
+  ),
+  tool("cancel_reminder", "Cancel a pending reminder by its id (listed in your context).", { id: { type: "string" } }, ["id"]),
+];
+
+export const COMPUTER_TOOL_NAMES = new Set(COMPUTER.map((t) => t.name));
+
+/** Anthropic-hosted web search and fetch; the newer versions aren't available on Haiku. */
+export function webTools(model: string): Anthropic.Beta.BetaToolUnion[] {
+  return /haiku/.test(model)
+    ? [
+        { type: "web_search_20250305", name: "web_search", max_uses: 5 },
+        { type: "web_fetch_20250910", name: "web_fetch", max_uses: 5 },
+      ]
+    : [
+        { type: "web_search_20260209", name: "web_search", max_uses: 5 },
+        { type: "web_fetch_20260209", name: "web_fetch", max_uses: 5 },
+      ];
+}
+
+/** The tools Claude gets in each mode. Computer and web tools are companion-mode only. */
+export function toolsFor(mode: Mode, opts: { computer?: boolean; web?: boolean; model?: string } = {}): Anthropic.Beta.BetaToolUnion[] {
+  if (mode === "practice") return [REMEMBER, CORRECT];
+  return [REMEMBER, COMPOSE, ...(opts.computer ? COMPUTER : []), ...(opts.web ? webTools(opts.model ?? "") : [])];
 }
 
 /** What running a tool produced: the result Claude reads, plus any effect for the app to apply. */
@@ -103,5 +176,64 @@ export function runTool(name: string, input: unknown): ToolOutcome {
     }
     default:
       return fail(`Error: unknown tool "${name}".`);
+  }
+}
+
+/** What a computer tool needs: the machine, the store (for reminders), and a way to report progress. */
+export interface AgentDeps {
+  computer: ComputerContext;
+  store: Store;
+  activity(a: Activity): void;
+  reminderSet(r: Reminder): void;
+}
+
+/** Runs one computer tool. Failures come back as error results Claude can read, never as exceptions. */
+export async function runComputerTool(name: string, input: unknown, deps: AgentDeps): Promise<ToolOutcome> {
+  const a = input && typeof input === "object" ? (input as Record<string, unknown>) : {};
+  const root = deps.computer.root;
+  try {
+    switch (name) {
+      case "system_status":
+        deps.activity({ kind: "status", target: "" });
+        return { result: await systemStatus(root), isError: false };
+      case "list_directory":
+        deps.activity({ kind: "list", target: text(a.path) || "~" });
+        return { result: await listDirectory(root, text(a.path)), isError: false };
+      case "find_files":
+        deps.activity({ kind: "find", target: text(a.query) });
+        return { result: await findFiles(root, text(a.query), text(a.path) || "."), isError: false };
+      case "read_file":
+        if (!text(a.path)) return fail('Error: "path" is required.');
+        deps.activity({ kind: "read", target: text(a.path) });
+        return { result: await readTextFile(root, text(a.path), Number(a.max_chars) || undefined), isError: false };
+      case "open":
+        deps.activity({ kind: "open", target: text(a.target) });
+        return { result: await openTarget(deps.computer, text(a.target)), isError: false };
+      case "set_reminder": {
+        if (!text(a.text)) return fail('Error: "text" is required.');
+        const due = parseDue({ in_minutes: a.in_minutes, at: a.at });
+        if (typeof due === "string") return fail("Error: " + due);
+        let reminder: Reminder | null = null;
+        await deps.store.update((s) => {
+          reminder = addReminder(s, text(a.text), due);
+        });
+        deps.activity({ kind: "reminder", target: text(a.text) });
+        deps.reminderSet(reminder!);
+        return { result: `Set reminder ${reminder!.id} for ${new Date(due).toLocaleString()}.`, isError: false };
+      }
+      case "cancel_reminder": {
+        let found = false;
+        await deps.store.update((s) => {
+          const before = s.reminders.length;
+          s.reminders = s.reminders.filter((r) => r.id !== text(a.id) || r.firedAt);
+          found = s.reminders.length < before;
+        });
+        return found ? { result: "Cancelled.", isError: false } : fail("Error: no pending reminder with that id.");
+      }
+      default:
+        return fail(`Error: unknown tool "${name}".`);
+    }
+  } catch (err) {
+    return fail("Error: " + (err instanceof Error ? err.message : String(err)));
   }
 }

@@ -7,7 +7,9 @@ import { test } from "node:test";
 import { echoable, runTurn } from "../server/chat.ts";
 import { config } from "../server/config.ts";
 import { Store, addMessage } from "../server/store.ts";
-import type { Correction, Memory, Song } from "../server/types.ts";
+import type { Correction, Memory, Reminder, Song } from "../server/types.ts";
+import type { Activity } from "../server/computer.ts";
+import { mkdir, writeFile } from "node:fs/promises";
 
 type Block = Anthropic.Beta.BetaContentBlock;
 
@@ -29,13 +31,14 @@ function fakeClient(rounds: Round[]) {
           requests.push(structuredClone(params));
           const round = rounds.shift();
           if (!round) throw new Error("unexpected extra round");
-          let onText: (d: string) => void = () => {};
+          let onText: (d: string, snapshot: string) => void = () => {};
           return {
-            on(event: string, cb: (d: string) => void) {
+            on(event: string, cb: (d: string, snapshot: string) => void) {
               if (event === "text") onText = cb;
             },
             async finalMessage() {
-              for (const d of round.text ?? []) onText(d);
+              let snapshot = "";
+              for (const d of round.text ?? []) onText(d, (snapshot += d));
               return { content: round.content, stop_reason: round.stop_reason };
             },
           };
@@ -61,16 +64,22 @@ function collect() {
   const memories: Memory[] = [];
   const songs: Song[] = [];
   const corrections: Correction[] = [];
+  const activities: Activity[] = [];
+  const reminders: Reminder[] = [];
   return {
     deltas,
     memories,
     songs,
     corrections,
+    activities,
+    reminders,
     on: {
       text: (d: string) => deltas.push(d),
       memory: (m: Memory) => memories.push(m),
       song: (s: Song) => songs.push(s),
       correction: (c: Correction) => corrections.push(c),
+      activity: (a: Activity) => activities.push(a),
+      reminderSet: (r: Reminder) => reminders.push(r),
     },
   };
 }
@@ -176,4 +185,36 @@ test("practice mode uses the tutor persona, offers correct, and saves correction
   assert.deepEqual(requests[0].tools.map((t: any) => t.name), ["remember", "correct"]);
   assert.equal(got.corrections[0].better, "My sister has moved");
   assert.equal((await store.load()).corrections[0].forAt, 2);
+});
+
+test("computer tools run against the workspace and report what they're doing", async () => {
+  const workspace = await mkdtemp(path.join(tmpdir(), "lei-ws-"));
+  await mkdir(path.join(workspace, "notes"));
+  await writeFile(path.join(workspace, "notes", "todo.txt"), "buy milk");
+  const { client, requests } = fakeClient([
+    { content: [{ type: "tool_use", id: "t1", name: "read_file", input: { path: "notes/todo.txt" } }], stop_reason: "tool_use" },
+    {
+      content: [{ type: "tool_use", id: "t2", name: "set_reminder", input: { text: "buy milk", in_minutes: 30 } }],
+      stop_reason: "tool_use",
+    },
+    { text: ["Milk it is."], content: [{ type: "text", text: "Milk it is." }], stop_reason: "end_turn" },
+  ]);
+  const store = await storeWithProfile();
+  const got = collect();
+  await runTurn({ client, config: { ...config, workspace }, store, signal: new AbortController().signal, on: got.on });
+  assert.equal(requests[1].messages.at(-1).content[0].content, "buy milk");
+  assert.deepEqual(got.activities.map((a) => a.kind), ["read", "reminder"]);
+  assert.equal(got.reminders[0].text, "buy milk");
+  assert.equal((await store.load()).reminders.length, 1);
+  assert.match(requests[0].system[0].text, /On Theo's/);
+});
+
+test("a paused turn (long web search) is sent back and continued", async () => {
+  const { client, requests } = fakeClient([
+    { text: ["Let me check."], content: [{ type: "text", text: "Let me check." }, { type: "server_tool_use", id: "s1", name: "web_search", input: { query: "weather" } }], stop_reason: "pause_turn" },
+    { text: ["It's sunny."], content: [{ type: "text", text: "It's sunny." }], stop_reason: "end_turn" },
+  ]);
+  const result = await runTurn({ client, config, store: await storeWithProfile(), signal: new AbortController().signal, on: collect().on });
+  assert.equal(result.text, "Let me check.\n\nIt's sunny.");
+  assert.equal(requests[1].messages.at(-1).role, "assistant");
 });

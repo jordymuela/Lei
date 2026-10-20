@@ -2,10 +2,28 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { runTool, toolsFor } from "../server/tools.ts";
 
-test("each mode gets its own tools, all streaming input eagerly", () => {
-  assert.deepEqual(toolsFor("companion").map((t) => t.name), ["remember", "compose"]);
-  assert.deepEqual(toolsFor("practice").map((t) => t.name), ["remember", "correct"]);
-  assert.ok([...toolsFor("companion"), ...toolsFor("practice")].every((t) => t.eager_input_streaming === true));
+const names = (tools: unknown[]) => tools.map((t) => (t as { name: string }).name);
+
+test("each mode gets its own tools; custom tools stream their input eagerly", () => {
+  assert.deepEqual(names(toolsFor("companion")), ["remember", "compose"]);
+  assert.deepEqual(names(toolsFor("practice", { computer: true, web: true })), ["remember", "correct"]);
+  const full = toolsFor("companion", { computer: true, web: true, model: "claude-opus-5-5" });
+  assert.deepEqual(names(full), [
+    "remember", "compose", "system_status", "list_directory", "find_files", "read_file", "open", "set_reminder", "cancel_reminder", "web_search", "web_fetch",
+  ]);
+  for (const t of full as { type?: string; eager_input_streaming?: boolean }[]) {
+    if (!t.type) assert.equal(t.eager_input_streaming, true);
+  }
+});
+
+test("there is no tool that runs commands, writes files or launches apps", () => {
+  const all = names(toolsFor("companion", { computer: true, web: true }));
+  for (const n of ["run_command", "write_file", "bash", "launch_app"]) assert.ok(!all.includes(n));
+});
+
+test("Haiku gets the web tool versions it supports", () => {
+  const web = toolsFor("companion", { web: true, model: "claude-haiku-5-5" }) as { type?: string }[];
+  assert.ok(web.some((t) => t.type === "web_search_20250305"));
 });
 
 test("correct needs what was said and a different, better version", () => {

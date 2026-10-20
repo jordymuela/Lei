@@ -6,12 +6,22 @@ import path from "node:path";
 import { SetupError, nameCompanion, runTurn } from "./chat.ts";
 import { config, ttsEnabled } from "./config.ts";
 import { welcomeBackNudge } from "./prompt.ts";
+import { ReminderClock } from "./reminders.ts";
+import { refuseReason } from "./security.ts";
 import { LIMITS, Store, addMessage } from "./store.ts";
 import { speak } from "./tts.ts";
-import type { ChatEvent, State } from "./types.ts";
+import type { ChatEvent, Reminder, State } from "./types.ts";
 
 const client = new Anthropic();
 const store = new Store(config.dataFile);
+
+/** Open pages listening on GET /api/events (server-sent events), for reminders. */
+const listeners = new Set<ServerResponse>();
+function deliverReminder(r: Reminder): boolean {
+  for (const res of listeners) res.write(`event: reminder\ndata: ${JSON.stringify(r)}\n\n`);
+  return listeners.size > 0;
+}
+const reminders = new ReminderClock(store, deliverReminder);
 
 const MIME: Record<string, string> = {
   ".html": "text/html; charset=utf-8",
@@ -119,6 +129,8 @@ async function chat(req: IncomingMessage, res: ServerResponse): Promise<void> {
         memory: (memory) => send({ type: "memory", memory }),
         song: (song) => send({ type: "song", song }),
         correction: (correction) => send({ type: "correction", correction }),
+        activity: (activity) => send({ type: "activity", activity }),
+        reminderSet: (reminder) => send({ type: "reminder_set", reminder }),
       },
     });
     let saved = null;
@@ -140,6 +152,24 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
   const url = new URL(req.url ?? "/", "http://localhost");
   const p = url.pathname;
   const m = req.method ?? "GET";
+
+  if (p.startsWith("/api/")) {
+    const refused = refuseReason(m, req.headers, config.host);
+    if (refused) throw new HttpError(403, refused);
+  }
+
+  if (p === "/api/events" && m === "GET") {
+    res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-store", connection: "keep-alive" });
+    res.write(": connected\n\n");
+    listeners.add(res);
+    const ping = setInterval(() => res.write(": ping\n\n"), 25_000);
+    res.on("close", () => {
+      clearInterval(ping);
+      listeners.delete(res);
+    });
+    await reminders.deliverPending();
+    return;
+  }
 
   if (p === "/api/state" && m === "GET") return sendJson(res, 200, publicState(await store.load()));
 
@@ -233,8 +263,12 @@ const server = createServer((req, res) => {
 });
 
 server.listen(config.port, config.host, () => {
+  reminders.start();
   const voice = ttsEnabled(config) ? "ElevenLabs" : "browser voices";
   console.log(`Lei is listening on http://${config.host}:${config.port}  (model ${config.model}, effort ${config.effort}, ${voice})`);
+  if (config.mode === "companion" && config.computer) {
+    console.log(`Can look through (read-only) ${config.workspace}${config.web ? ", and search the web" : ""}. Set LEI_COMPUTER=off to turn this off.`);
+  }
   if (!process.env.ANTHROPIC_API_KEY && !process.env.ANTHROPIC_AUTH_TOKEN) {
     console.log("No ANTHROPIC_API_KEY set; using an `ant auth login` profile if there is one.");
   }

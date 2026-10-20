@@ -10,7 +10,7 @@ const tempFile = async () => path.join(await mkdtemp(path.join(tmpdir(), "lei-")
 test("a fresh store starts empty and persists updates to disk", async () => {
   const file = await tempFile();
   const store = new Store(file);
-  assert.deepEqual(await store.load(), { profile: null, memories: [], transcript: [], corrections: [] });
+  assert.deepEqual(await store.load(), { profile: null, memories: [], transcript: [], corrections: [], reminders: [] });
   await store.update((s) => addMessage(s, { role: "user", text: "hi", at: 1 }));
   const reloaded = await new Store(file).load();
   assert.equal(reloaded.transcript[0].text, "hi");
@@ -40,7 +40,7 @@ test("reset deletes the file", async () => {
   const store = new Store(file);
   await store.update((s) => addMessage(s, { role: "user", text: "x", at: 1 }));
   await store.reset();
-  assert.deepEqual(await new Store(file).load(), { profile: null, memories: [], transcript: [], corrections: [] });
+  assert.deepEqual(await new Store(file).load(), { profile: null, memories: [], transcript: [], corrections: [], reminders: [] });
 });
 
 test("addCorrection ties a correction to the latest user message and skips repeats", async () => {

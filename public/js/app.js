@@ -369,6 +369,29 @@ function loadState(state) {
   translatePage(t);
 }
 
+/** Reminders arrive from the server over server-sent events and are spoken when due. */
+let events = null;
+function listenForReminders() {
+  if (events || !("EventSource" in window)) return;
+  events = new EventSource("/api/events");
+  events.addEventListener("reminder", (e) => {
+    let reminder;
+    try {
+      reminder = JSON.parse(e.data);
+    } catch {
+      return;
+    }
+    const line = t("reminder.say", { text: reminder.text });
+    toast(line);
+    notice(line, false);
+    figure.kick(1);
+    if (prefs.voiceOn) speaker.whenDone(() => speaker.say(line));
+    if (document.hidden && "Notification" in window && Notification.permission === "granted") {
+      new Notification(S.profile?.companionName || "Lei", { body: reminder.text });
+    }
+  });
+}
+
 function enterChat(fresh) {
   S.stage = "chat";
   app.classList.remove("boot");
@@ -382,6 +405,7 @@ function enterChat(fresh) {
   $("hint").textContent = t(listener.supported ? "chat.hint" : "chat.hintNoMic");
   renderLog();
   refresh();
+  if (!practice()) listenForReminders();
 }
 
 const lastAt = () => (S.transcript.length ? S.transcript[S.transcript.length - 1].at : 0);
@@ -479,9 +503,21 @@ function notice(text, retry) {
 }
 const clearNotices = () => logEl.querySelectorAll(".notice").forEach((n) => n.remove());
 
+/** One quiet line under the reply saying what Lei is doing ("Reading ~/notes.txt"). */
+function showActivity(view, activity) {
+  let line = view.row.querySelector(".activity");
+  if (!line) {
+    line = h("span", "activity");
+    view.row.append(line);
+  }
+  const target = activity.target.length > 60 ? activity.target.slice(0, 57) + "…" : activity.target;
+  line.textContent = t("activity." + activity.kind, { target });
+}
+
 function finalizeLive(live, keep) {
   if (live.done) return;
   live.done = true;
+  live.view.row.querySelector(".activity")?.remove();
   if (S.live === live) S.live = null;
   const m = live.msg;
   m.text = m.text.trim();
@@ -530,6 +566,13 @@ async function respond(body, quiet = false) {
           S.memories.push(e.memory);
           if (!$("memSheet").hidden) renderMemories();
           toast(t("toast.remembered", { text: e.memory.text }));
+        } else if (e.type === "activity") {
+          showActivity(view, e.activity);
+          scrollEnd();
+        } else if (e.type === "reminder_set") {
+          const time = new Date(e.reminder.due).toLocaleString(t.lang, { weekday: "short", hour: "numeric", minute: "2-digit" });
+          toast(t("reminder.set", { time, text: e.reminder.text }));
+          if ("Notification" in window && Notification.permission === "default") Notification.requestPermission().catch(() => {});
         } else if (e.type === "correction") {
           S.corrections.push(e.correction);
           showCorrection(e.correction);

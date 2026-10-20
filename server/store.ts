@@ -1,10 +1,10 @@
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
-import type { ChatMessage, Correction, Memory, State } from "./types.ts";
+import type { ChatMessage, Correction, Memory, Reminder, State } from "./types.ts";
 
-export const LIMITS = { transcript: 200, memories: 200, corrections: 300, messageChars: 4000, memoryChars: 240, correctionChars: 300 };
+export const LIMITS = { transcript: 200, memories: 200, corrections: 300, reminders: 100, messageChars: 4000, memoryChars: 240, correctionChars: 300 };
 
-export const emptyState = (): State => ({ profile: null, memories: [], transcript: [], corrections: [] });
+export const emptyState = (): State => ({ profile: null, memories: [], transcript: [], corrections: [], reminders: [] });
 
 /**
  * The whole state lives in one JSON file. Every change goes through
@@ -93,6 +93,19 @@ function trim(state: State): void {
   if (state.transcript.length > LIMITS.transcript) state.transcript.splice(0, state.transcript.length - LIMITS.transcript);
   if (state.memories.length > LIMITS.memories) state.memories.splice(0, state.memories.length - LIMITS.memories);
   if (state.corrections.length > LIMITS.corrections) state.corrections.splice(0, state.corrections.length - LIMITS.corrections);
+  // Drop the oldest finished reminders first; pending ones are never trimmed.
+  while (state.reminders.length > LIMITS.reminders) {
+    const i = state.reminders.findIndex((r) => r.firedAt && r.delivered);
+    if (i < 0) break;
+    state.reminders.splice(i, 1);
+  }
+}
+
+/** A new pending reminder. */
+export function addReminder(state: State, text: string, due: number, now = Date.now()): Reminder {
+  const reminder: Reminder = { id: "r" + now.toString(36) + Math.random().toString(36).slice(2, 5), text: text.trim().slice(0, 300), due };
+  state.reminders.push(reminder);
+  return reminder;
 }
 
 function normalize(raw: unknown): State {
@@ -102,5 +115,6 @@ function normalize(raw: unknown): State {
     memories: Array.isArray(s.memories) ? s.memories : [],
     transcript: Array.isArray(s.transcript) ? s.transcript : [],
     corrections: Array.isArray(s.corrections) ? s.corrections : [],
+    reminders: Array.isArray(s.reminders) ? s.reminders : [],
   };
 }

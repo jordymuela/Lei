@@ -40,6 +40,23 @@ Practice mode also sends `ui` (the learner's language, for `i18n.js`) and `speec
 
 **Interface text.** All user-facing strings live in `public/js/i18n.js` (`en`, `pt`, `es`; missing keys fall back to English). Use `t("key", vars)` in `app.js` and `data-i18n` attributes in `index.html`; don't hard-code copy. The Portuguese and Spanish practice strings assume English is the target language.
 
+**Computer abilities are read-only by design.** In companion mode (`config.computer`, `config.web`), `toolsFor()` adds:
+- the computer tools in `server/tools.ts`, run by `runComputerTool()` on top of `server/computer.ts`: `system_status`, `list_directory`, `find_files`, `read_file`, `open` (http(s) URLs and folders only), `set_reminder`, `cancel_reminder`;
+- Anthropic's hosted `web_search`/`web_fetch`. A long search can end a round with `pause_turn`, which `runTurn()` sends back and continues.
+
+Rules for these tools:
+- Every path goes through `resolveInRoot()`, which confines it to `config.workspace` and refuses secret files (`isSecretPath()`).
+- There is deliberately no tool that runs commands, writes or deletes files, or launches apps. Opening a file could run it, so `open` refuses files too. Adding any of these is a product and security decision for the owner; don't add one as a side change.
+- Tools report progress through `on.activity`, which becomes `activity` events that the page shows as a line under the reply.
+
+**Reminders** live in `State.reminders`. `ReminderClock` (`server/reminders.ts`) fires due ones every 10 s. It delivers them to open pages over server-sent events (`GET /api/events`), and keeps undelivered ones until a page connects.
+
+**Request checks.** `server/security.ts` guards every `/api/` route:
+- While the server listens on localhost, the Host header must be localhost. This blocks DNS rebinding.
+- Writes need a same-origin `Origin` (or none), no `Sec-Fetch-Site: cross-site`, and a JSON content type.
+
+New write routes get these checks automatically; keep them.
+
 **Code shared by browser and server.** `public/js/lib/*.js` is plain ESM with no DOM access. The browser loads it directly and the server and tests import it. `notes.js` is the music score format (`NOTE:BEATS`, `+` for chords, `R` for rests): the server uses it to validate `compose` tool input, and `music.js` uses it to play songs. Keep these files DOM-free.
 
 **Prompt layout** (`server/prompt.ts`):
@@ -59,4 +76,4 @@ Practice mode also sends `ui` (the learner's language, for `i18n.js`) and `speec
 
 ## Tests
 
-The tests use `node:test` and need no network. `test/chat.test.ts` drives `runTurn()` with a fake client that replays scripted model rounds through `beta.messages.stream()`. Extend that pattern rather than calling the real API. The browser code under `public/js/` (other than `lib/`) has no automated tests. Check it by running the server and using the page.
+The tests use `node:test` and need no network. `test/computer.test.ts` builds a temporary folder tree, including fake secret files, to check path confinement. `test/chat.test.ts` drives `runTurn()` with a fake client that replays scripted model rounds through `beta.messages.stream()`. Extend that pattern rather than calling the real API. The browser code under `public/js/` (other than `lib/`) has no automated tests. Check it by running the server and using the page.
