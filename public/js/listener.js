@@ -25,6 +25,8 @@ export class Listener {
   constructor(hooks) {
     this.hooks = hooks;
     this.supported = !!SR;
+    /** BCP 47 language to recognize; empty = the browser's language. */
+    this.lang = "";
     this.wanted = false;
     this.paused = false;
     this.rec = null;
@@ -77,7 +79,7 @@ export class Listener {
     const r = new SR();
     r.continuous = true;
     r.interimResults = true;
-    r.lang = navigator.language || "en-US";
+    r.lang = this.lang || navigator.language || "en-US";
     r.onresult = (e) => this.rec === r && this.#result(e);
     r.onerror = (e) => this.rec === r && this.#error(e.error);
     r.onend = () => {

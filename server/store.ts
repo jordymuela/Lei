@@ -1,10 +1,10 @@
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
-import type { ChatMessage, Memory, State } from "./types.ts";
+import type { ChatMessage, Correction, Memory, State } from "./types.ts";
 
-export const LIMITS = { transcript: 200, memories: 200, messageChars: 4000, memoryChars: 240 };
+export const LIMITS = { transcript: 200, memories: 200, corrections: 300, messageChars: 4000, memoryChars: 240, correctionChars: 300 };
 
-export const emptyState = (): State => ({ profile: null, memories: [], transcript: [] });
+export const emptyState = (): State => ({ profile: null, memories: [], transcript: [], corrections: [] });
 
 /**
  * The whole state lives in one JSON file. Every change goes through
@@ -74,9 +74,25 @@ export function addMessage(state: State, message: ChatMessage): void {
   state.transcript.push({ ...message, text: message.text.slice(0, LIMITS.messageChars) });
 }
 
+/**
+ * Records a flagged mistake against the user message it belongs to (the
+ * latest one). Returns it, or null when it's empty or a repeat for that message.
+ */
+export function addCorrection(state: State, c: { said: string; better: string; why: string }, now = Date.now()): Correction | null {
+  const clip = (s: string) => s.replace(/\s+/g, " ").trim().slice(0, LIMITS.correctionChars);
+  const said = clip(c.said), better = clip(c.better), why = clip(c.why);
+  if (!said || !better || said === better) return null;
+  const forAt = state.transcript.findLast((m) => m.role === "user")?.at ?? now;
+  if (state.corrections.some((x) => x.forAt === forAt && x.said === said)) return null;
+  const correction = { id: now.toString(36) + Math.random().toString(36).slice(2, 6), said, better, why, at: now, forAt };
+  state.corrections.push(correction);
+  return correction;
+}
+
 function trim(state: State): void {
   if (state.transcript.length > LIMITS.transcript) state.transcript.splice(0, state.transcript.length - LIMITS.transcript);
   if (state.memories.length > LIMITS.memories) state.memories.splice(0, state.memories.length - LIMITS.memories);
+  if (state.corrections.length > LIMITS.corrections) state.corrections.splice(0, state.corrections.length - LIMITS.corrections);
 }
 
 function normalize(raw: unknown): State {
@@ -85,5 +101,6 @@ function normalize(raw: unknown): State {
     profile: s.profile && s.profile.companionName ? s.profile : null,
     memories: Array.isArray(s.memories) ? s.memories : [],
     transcript: Array.isArray(s.transcript) ? s.transcript : [],
+    corrections: Array.isArray(s.corrections) ? s.corrections : [],
   };
 }

@@ -1,9 +1,18 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { TOOLS, runTool } from "../server/tools.ts";
+import { runTool, toolsFor } from "../server/tools.ts";
 
-test("every tool streams its input eagerly", () => {
-  assert.ok(TOOLS.every((t) => t.eager_input_streaming === true));
+test("each mode gets its own tools, all streaming input eagerly", () => {
+  assert.deepEqual(toolsFor("companion").map((t) => t.name), ["remember", "compose"]);
+  assert.deepEqual(toolsFor("practice").map((t) => t.name), ["remember", "correct"]);
+  assert.ok([...toolsFor("companion"), ...toolsFor("practice")].every((t) => t.eager_input_streaming === true));
+});
+
+test("correct needs what was said and a different, better version", () => {
+  const ok = runTool("correct", { said: "I have 20 years", better: "I'm 20 years old", why: "Idade usa 'to be'." });
+  assert.deepEqual(ok.correction, { said: "I have 20 years", better: "I'm 20 years old", why: "Idade usa 'to be'." });
+  assert.equal(runTool("correct", { said: "ok", better: "ok", why: "" }).isError, true);
+  assert.equal(runTool("correct", { said: "", better: "x" }).isError, true);
 });
 
 test("remember needs a non-empty fact", () => {

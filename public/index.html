@@ -19,8 +19,8 @@
       <p class="status" id="status"><i></i><span id="statusText">Starting</span></p>
     </div>
     <nav class="tools" id="tools" aria-label="Controls" hidden>
-      <button class="tbtn" id="memBtn" type="button">Memories</button>
-      <button class="tbtn" id="setBtn" type="button">Settings</button>
+      <button class="tbtn" id="memBtn" type="button" data-i18n="nav.memories">Memories</button>
+      <button class="tbtn" id="setBtn" type="button" data-i18n="nav.settings">Settings</button>
     </nav>
   </header>
 
@@ -59,49 +59,54 @@
 <div class="sheet-wrap" id="memSheet" hidden>
   <div class="scrim" data-close></div>
   <section class="sheet" role="dialog" aria-modal="true" aria-labelledby="memTitle">
-    <div class="sheet-head"><h2 id="memTitle">Memories</h2><button class="tbtn" type="button" data-close>Close</button></div>
+    <div class="sheet-head"><h2 id="memTitle" data-i18n="mem.title">Memories</h2><button class="tbtn" type="button" data-close data-i18n="nav.close">Close</button></div>
     <p class="sheet-note" id="memNote"></p>
     <ul class="mem-list" id="memList"></ul>
+    <div class="group" id="fixGroup" hidden>
+      <h3 data-i18n="mem.corrections">Your corrections</h3>
+      <p class="sheet-note" id="fixNote"></p>
+      <ul class="mem-list" id="fixList"></ul>
+    </div>
   </section>
 </div>
 
 <div class="sheet-wrap" id="setSheet" hidden>
   <div class="scrim" data-close></div>
   <section class="sheet" role="dialog" aria-modal="true" aria-labelledby="setTitle">
-    <div class="sheet-head"><h2 id="setTitle">Settings</h2><button class="tbtn" type="button" data-close>Close</button></div>
+    <div class="sheet-head"><h2 id="setTitle" data-i18n="set.title">Settings</h2><button class="tbtn" type="button" data-close data-i18n="nav.close">Close</button></div>
 
     <div class="group">
-      <h3>Voice</h3>
-      <label class="check" for="voiceOn"><input type="checkbox" id="voiceOn"><span>Speak replies out loud</span></label>
-      <label class="stack" for="voiceSel"><span>Voice</span><select id="voiceSel"></select></label>
-      <label class="stack" for="rate"><span>Speed <output id="rateOut" for="rate">1×</output></span><input type="range" id="rate" min="0.8" max="1.25" step="0.05" value="1"></label>
+      <h3 data-i18n="set.voice">Voice</h3>
+      <label class="check" for="voiceOn"><input type="checkbox" id="voiceOn"><span data-i18n="set.speak">Speak replies out loud</span></label>
+      <label class="stack" for="voiceSel"><span data-i18n="set.voiceSel">Voice</span><select id="voiceSel"></select></label>
+      <label class="stack" for="rate"><span><span data-i18n="set.speed">Speed</span> <output id="rateOut" for="rate">1×</output></span><input type="range" id="rate" min="0.8" max="1.25" step="0.05" value="1"></label>
     </div>
 
     <div class="group">
-      <h3>Listening</h3>
-      <label class="check" for="autoListen"><input type="checkbox" id="autoListen"><span>Keep listening after each reply</span></label>
+      <h3 data-i18n="set.listening">Listening</h3>
+      <label class="check" for="autoListen"><input type="checkbox" id="autoListen"><span data-i18n="set.autoListen">Keep listening after each reply</span></label>
       <p class="sheet-note" id="micNote"></p>
     </div>
 
     <div class="group">
-      <h3>Name</h3>
+      <h3 data-i18n="set.name">Name</h3>
       <form class="inline" id="renameForm">
         <label class="sr" for="renameIn">Name</label>
         <input class="line-input small" id="renameIn" maxlength="20" autocomplete="off">
-        <button class="pill ghost" type="submit">Rename</button>
+        <button class="pill ghost" type="submit" data-i18n="set.rename">Rename</button>
       </form>
     </div>
 
     <div class="group">
-      <h3>Memory and history</h3>
-      <p class="sheet-note">Everything is saved on this computer, in the server's data folder.</p>
+      <h3 data-i18n="set.history">Memory and history</h3>
+      <p class="sheet-note" data-i18n="set.historyNote">Everything is saved on the server, in its data folder.</p>
       <div class="row-btns">
-        <button class="pill ghost" id="clearBtn" type="button">Clear conversation</button>
-        <button class="pill ghost" id="resetBtn" type="button">Start over</button>
+        <button class="pill ghost" id="clearBtn" type="button" data-i18n="set.clear">Clear conversation</button>
+        <button class="pill ghost" id="resetBtn" type="button" data-i18n="set.reset">Start over</button>
       </div>
       <div class="confirm" id="confirm" hidden>
         <p id="confirmText"></p>
-        <div class="row-btns"><button class="pill ghost" id="confirmNo" type="button">Keep it</button><button class="pill" id="confirmYes" type="button">Erase</button></div>
+        <div class="row-btns"><button class="pill ghost" id="confirmNo" type="button" data-i18n="set.keep">Keep it</button><button class="pill" id="confirmYes" type="button">Erase</button></div>
       </div>
     </div>
   </section>

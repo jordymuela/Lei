@@ -3,10 +3,20 @@ import path from "node:path";
 export type Effort = "low" | "medium" | "high" | "xhigh" | "max";
 const EFFORTS: Effort[] = ["low", "medium", "high", "xhigh", "max"];
 
+/** companion: the "Her"-style friend. practice: a speaking partner for learning a language. */
+export type Mode = "companion" | "practice";
+
 const env = process.env;
 const effort = (env.LEI_EFFORT ?? "low") as Effort;
 
 export const config = {
+  mode: (env.LEI_MODE === "practice" ? "practice" : "companion") as Mode,
+  practice: {
+    /** The learner's own language: the interface and the explanations use it. */
+    native: env.LEI_NATIVE_LANG ?? "es-MX",
+    /** The language being practised: speech recognition and the voice use it. */
+    target: env.LEI_TARGET_LANG ?? "en-US",
+  },
   port: Number(env.PORT ?? 3000),
   // Bound to localhost by default: the server spends your Claude credits for anyone who can reach it.
   host: env.HOST ?? "127.0.0.1",

@@ -7,7 +7,7 @@ import { test } from "node:test";
 import { echoable, runTurn } from "../server/chat.ts";
 import { config } from "../server/config.ts";
 import { Store, addMessage } from "../server/store.ts";
-import type { Memory, Song } from "../server/types.ts";
+import type { Correction, Memory, Song } from "../server/types.ts";
 
 type Block = Anthropic.Beta.BetaContentBlock;
 
@@ -60,11 +60,18 @@ function collect() {
   const deltas: string[] = [];
   const memories: Memory[] = [];
   const songs: Song[] = [];
+  const corrections: Correction[] = [];
   return {
     deltas,
     memories,
     songs,
-    on: { text: (d: string) => deltas.push(d), memory: (m: Memory) => memories.push(m), song: (s: Song) => songs.push(s) },
+    corrections,
+    on: {
+      text: (d: string) => deltas.push(d),
+      memory: (m: Memory) => memories.push(m),
+      song: (s: Song) => songs.push(s),
+      correction: (c: Correction) => corrections.push(c),
+    },
   };
 }
 
@@ -151,4 +158,22 @@ test("after a mid-reply fallback, only text from the declined model is echoed", 
   );
   const plain = [{ type: "text", text: "hi" }] as unknown as Block[];
   assert.equal(echoable(plain), plain);
+});
+
+test("practice mode uses the tutor persona, offers correct, and saves corrections", async () => {
+  const { client, requests } = fakeClient([
+    {
+      content: [{ type: "tool_use", id: "c1", name: "correct", input: { said: "My sister moved", better: "My sister has moved", why: "Present perfect." } }],
+      stop_reason: "tool_use",
+    },
+    { text: ["Lisbon is lovely!"], content: [{ type: "text", text: "Lisbon is lovely!" }], stop_reason: "end_turn" },
+  ]);
+  const store = await storeWithProfile();
+  const got = collect();
+  const practiceConfig = { ...config, mode: "practice" as const };
+  await runTurn({ client, config: practiceConfig, store, signal: new AbortController().signal, on: got.on });
+  assert.match(requests[0].system[0].text, /speaking-practice app/);
+  assert.deepEqual(requests[0].tools.map((t: any) => t.name), ["remember", "correct"]);
+  assert.equal(got.corrections[0].better, "My sister has moved");
+  assert.equal((await store.load()).corrections[0].forAt, 2);
 });

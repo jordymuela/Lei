@@ -1,8 +1,12 @@
 // Lei's page controller: setup, the conversation, and the voice loop
 // (listen -> send -> stream reply -> speak -> listen again).
+// The server decides the mode: "companion" (the Her-style friend) or
+// "practice" (a speaking partner that corrects the learner).
 
 import { api, chatStream } from "./api.js";
 import { Figure } from "./figure.js";
+import { makeT, translatePage } from "./i18n.js";
+import { splitAsides } from "./lib/sentences.js";
 import { stampText } from "./lib/time.js";
 import { Listener } from "./listener.js";
 import { Music } from "./music.js";
@@ -19,16 +23,22 @@ function h(tag, cls, text) {
   return e;
 }
 
+/** Interface text; replaced once the server says which language the page speaks. */
+let t = makeT(null);
+
 /* ---------- State ---------- */
 
 const S = {
-  mode: "boot", // boot | waking | chat
+  stage: "boot", // boot | waking | chat
+  mode: "companion", // companion | practice (from the server)
   profile: null,
   memories: [],
   transcript: [],
+  corrections: [],
   /** The reply being streamed: { ctl, msg, view, gotText, done, song } */
   live: null,
 };
+const practice = () => S.mode === "practice";
 
 const PREFS_KEY = "lei.prefs";
 const prefs = { voiceOn: true, voice: "", rate: 1, autoListen: true };
@@ -52,14 +62,7 @@ const listener = new Listener({
     send(text);
   },
   onChange: () => refresh(),
-  onError: (code) =>
-    toast(
-      {
-        denied: "Microphone access is blocked. Allow it in the browser's site settings to talk.",
-        "no-mic": "No microphone found.",
-        network: "Speech recognition lost its connection. Tap the mic to try again.",
-      }[code] || "Listening stopped. Tap the mic to try again.",
-    ),
+  onError: (code) => toast(t({ denied: "mic.denied", "no-mic": "mic.noMic", network: "mic.network" }[code] || "mic.failed")),
 });
 const figure = new Figure($("figure"), () => ({ phase: phase(), hearing: listener.hearing }));
 applyVoicePrefs();
@@ -80,7 +83,7 @@ function applyVoicePrefs() {
 const isBusy = () => !!S.live || speaker.speaking || !!music.current;
 
 function phase() {
-  if (S.mode === "waking") return "thinking";
+  if (S.stage === "waking") return "thinking";
   if (S.live && !S.live.gotText) return "thinking";
   if (speaker.speaking || (S.live && S.live.gotText)) return "speaking";
   if (music.current) return "music";
@@ -92,28 +95,29 @@ let resumeTimer = 0;
 function refresh() {
   const p = phase();
   let s;
-  if (S.mode === "boot") s = "Setup";
-  else if (S.mode === "waking") s = "Waking up";
-  else if (p === "listening") s = listener.hearing ? "Hearing you" : "Listening";
-  else s = { idle: "Here", thinking: "Thinking", speaking: "Speaking", music: music.current ? "Playing “" + music.current.song.title + "”" : "Playing" }[p];
+  if (S.stage === "boot") s = t("status.setup");
+  else if (S.stage === "waking") s = t("status.waking");
+  else if (p === "listening") s = t(listener.hearing ? "status.hearing" : "status.listening");
+  else if (p === "music") s = music.current ? t("status.playing", { title: music.current.song.title }) : t("status.playingPlain");
+  else s = t({ idle: "status.here", thinking: "status.thinking", speaking: "status.speaking" }[p]);
   $("statusText").textContent = s;
   $("status").classList.toggle("busy", p !== "idle");
   $("stage").classList.toggle("can-interrupt", isBusy());
 
-  // Never listen while the companion's voice or music is playing: the mic would hear it.
+  // Never listen while the voice or music is playing: the mic would hear it.
   const quiet = !speaker.speaking && !music.current;
   clearTimeout(resumeTimer);
   if (!quiet) listener.pause();
   else if (listener.paused) resumeTimer = setTimeout(() => !speaker.speaking && !music.current && listener.resume(), 350);
 
   micBtn.setAttribute("aria-pressed", String(listener.wanted));
-  micBtn.setAttribute("aria-label", listener.wanted ? "Stop listening" : "Start talking");
+  micBtn.setAttribute("aria-label", t(listener.wanted ? "mic.stop" : "mic.start"));
   micBtn.classList.toggle("paused", listener.wanted && listener.paused);
 
   const empty = !ta.value.trim(), stop = isBusy() && empty;
   sendBtn.classList.toggle("is-stop", stop);
   sendBtn.classList.toggle("empty", empty && !stop);
-  sendBtn.setAttribute("aria-label", stop ? "Stop" : "Send");
+  sendBtn.setAttribute("aria-label", t(stop ? "send.stop" : "send.send"));
 }
 
 function interrupt() {
@@ -138,68 +142,99 @@ function setName(name, animate) {
 
 let toastTimer = 0;
 function toast(text) {
-  const t = $("toast");
-  t.textContent = text;
-  t.hidden = false;
-  t.classList.remove("show");
-  void t.offsetWidth;
-  t.classList.add("show");
+  const el = $("toast");
+  el.textContent = text;
+  el.hidden = false;
+  el.classList.remove("show");
+  void el.offsetWidth;
+  el.classList.add("show");
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => (t.hidden = true), 4200);
+  toastTimer = setTimeout(() => (el.hidden = true), 4200);
+}
+
+/** Puts a reply's text into `el`, showing [asides] (help in the learner's language) as their own quieter line. */
+function renderText(el, text) {
+  el.replaceChildren(...splitAsides(text).map((part) => (part.aside ? h("span", "aside", part.text) : document.createTextNode(part.text))));
 }
 
 /* ---------- Setup ---------- */
 
-const STEPS = [
-  { key: "userName", q: "What’s your name?", hint: "Your first name is perfect.", ph: "Your name", max: 40, required: true },
-  { key: "about", q: "Describe yourself in a few words.", hint: "Anything goes. “Night owl, nurse, learning guitar.”", ph: "A few words about you", max: 200 },
-  { key: "onMind", q: "What’s been on your mind lately?", hint: "Big or small. You can skip this one.", ph: "Lately I keep thinking about…", max: 600, area: true },
-  { key: "voice", q: "Choose a voice.", hint: "Tap one to hear it. You can change it later in Settings.", voice: true },
-];
-let draft = { userName: "", about: "", onMind: "" };
-let step = -1;
+const LEVELS = ["beginner", "intermediate", "advanced"];
+function steps() {
+  return practice()
+    ? [
+        { key: "userName", max: 40, required: true },
+        { key: "level", choices: LEVELS },
+        { key: "goal", max: 300 },
+        { key: "voice", voice: true },
+      ]
+    : [
+        { key: "userName", max: 40, required: true },
+        { key: "about", max: 200 },
+        { key: "onMind", max: 600, area: true },
+        { key: "voice", voice: true },
+      ];
+}
+let draft = { userName: "", about: "", onMind: "", level: "intermediate", goal: "" };
 
 function enterIntro() {
-  S.mode = "boot";
-  step = -1;
+  S.stage = "boot";
   app.classList.add("boot");
   setupEl.hidden = false;
   logEl.hidden = true;
   dock.hidden = true;
   $("tools").hidden = true;
-  setName("her");
-  setupEl.replaceChildren(
-    h("p", "eyebrow", "A companion inspired by the film Her"),
-    h("h2", "q", "Someone to talk to. Curious about you, honest about what it is, and a little more yours every time you talk."),
-    h("p", "qhint", "It picks its own name, talks with you out loud, and keeps notes about what matters to you. You can read and erase those notes anytime."),
-  );
+  setName(practice() ? "lei" : "her");
+  const k = practice() ? "practice.intro." : "intro.";
+  setupEl.replaceChildren(h("p", "eyebrow", t(k + "eyebrow")), h("h2", "q", t(k + "title")), h("p", "qhint", t(k + "body")));
   const actions = h("div", "actions");
-  const begin = h("button", "pill", "Begin setup");
+  const begin = h("button", "pill", t("intro.begin"));
   begin.type = "button";
   begin.onclick = () => {
     speaker.unlock();
     music.ensure();
     renderStep(0);
   };
-  actions.append(begin, h("span", "fine", "Four questions"));
+  actions.append(begin, h("span", "fine", t("intro.fine")));
   setupEl.append(actions);
   refresh();
 }
 
 function renderStep(i) {
-  step = i;
-  const st = STEPS[i];
-  setupEl.replaceChildren(h("p", "eyebrow", `Setup · ${i + 1} of ${STEPS.length}`), h("h2", "q", st.q), h("p", "qhint", st.hint));
+  const all = steps();
+  const st = all[i];
+  const vars = { target: "English" };
+  setupEl.replaceChildren(
+    h("p", "eyebrow", t("setup.step", { n: i + 1, total: all.length })),
+    h("h2", "q", t("q." + st.key, vars)),
+    h("p", "qhint", t("hint." + st.key, vars)),
+  );
   let input = null;
   if (st.voice) {
     const wrap = h("div", "voices");
     wrap.id = "voicePicker";
     fillVoicePicker(wrap);
     setupEl.append(wrap);
+  } else if (st.choices) {
+    const wrap = h("div", "voices");
+    st.choices.forEach((choice, idx) => {
+      const row = h("div", "vopt"), lab = h("label"), r = h("input"), txt = h("span", "vtext");
+      r.type = "radio";
+      r.name = "choice-" + st.key;
+      r.id = `choice-${st.key}-${idx}`;
+      r.checked = draft[st.key] === choice;
+      r.onchange = () => (draft[st.key] = choice);
+      lab.htmlFor = r.id;
+      txt.append(h("span", "vname", t(`${st.key}.${choice}`)), h("span", "vsub", t(`${st.key}.${choice}Sub`)));
+      lab.append(r, txt);
+      row.append(lab);
+      wrap.append(row);
+    });
+    setupEl.append(wrap);
   } else {
     input = h(st.area ? "textarea" : "input", "line-input");
     input.id = "setup-" + st.key;
-    input.placeholder = st.ph;
+    input.placeholder = t("ph." + st.key);
     input.maxLength = st.max;
     input.value = draft[st.key] || "";
     if (st.area) input.rows = 3;
@@ -207,14 +242,14 @@ function renderStep(i) {
       input.type = "text";
       input.autocomplete = st.key === "userName" ? "given-name" : "off";
     }
-    const lab = h("label", "sr", st.q);
+    const lab = h("label", "sr", t("q." + st.key, vars));
     lab.htmlFor = input.id;
     setupEl.append(lab, input);
   }
   const actions = h("div", "actions");
-  const back = h("button", "pill ghost", "Back");
+  const back = h("button", "pill ghost", t("setup.back"));
   back.type = "button";
-  const next = h("button", "pill", i === STEPS.length - 1 ? "Wake up" : "Continue");
+  const next = h("button", "pill", t(i === all.length - 1 ? "setup.wake" : "setup.continue"));
   next.type = "button";
   actions.append(back, next);
   setupEl.append(actions);
@@ -236,7 +271,7 @@ function renderStep(i) {
     speaker.unlock();
     music.ensure();
     if (input) draft[st.key] = input.value.trim();
-    if (i < STEPS.length - 1) renderStep(i + 1);
+    if (i < all.length - 1) renderStep(i + 1);
     else wake();
   };
   back.onclick = () => (i === 0 ? enterIntro() : renderStep(i - 1));
@@ -246,9 +281,9 @@ function renderStep(i) {
 /** The voice choices: the server's natural voice (if configured), the best browser voices, and text only. */
 function voiceChoices(limit) {
   const list = [];
-  if (speaker.serverAvailable) list.push({ id: SERVER_VOICE, label: "Natural voice", sub: "ElevenLabs" });
+  if (speaker.serverAvailable) list.push({ id: SERVER_VOICE, label: t("voice.natural"), sub: "ElevenLabs" });
   for (const v of speaker.ranked().slice(0, limit)) {
-    list.push({ id: v.name, label: prettyVoice(v.name), sub: v.lang + (/premium|enhanced|natural|neural/i.test(v.name) ? " · high quality" : "") });
+    list.push({ id: v.name, label: prettyVoice(v.name), sub: v.lang + (/premium|enhanced|natural|neural/i.test(v.name) ? " · " + t("voice.highQuality") : "") });
   }
   return list;
 }
@@ -274,13 +309,13 @@ function fillVoicePicker(wrap) {
       else speaker.stop();
     };
     lab.htmlFor = r.id;
-    txt.append(h("span", "vname", choice ? choice.label : "Text only"), h("span", "vsub", choice ? choice.sub : "No voice. Replies appear as writing."));
+    txt.append(h("span", "vname", choice ? choice.label : t("voice.textOnly")), h("span", "vsub", choice ? choice.sub : t("voice.textOnlySub")));
     lab.append(r, txt);
     row.append(lab);
     if (choice) {
-      const b = h("button", "mini", "Hear");
+      const b = h("button", "mini", t("voice.hear"));
       b.type = "button";
-      b.setAttribute("aria-label", "Hear " + choice.label);
+      b.setAttribute("aria-label", t("voice.hear") + " " + choice.label);
       b.onclick = () => speaker.preview(choice.id);
       row.append(b);
     }
@@ -292,12 +327,11 @@ function fillVoicePicker(wrap) {
 }
 
 async function wake() {
-  S.mode = "waking";
+  S.stage = "waking";
   refresh();
-  setupEl.replaceChildren(h("p", "eyebrow", "Starting up"), h("h2", "q", "Waking up."), h("p", "qhint", "Reading your answers and choosing a name."));
+  setupEl.replaceChildren(h("p", "eyebrow", t("setup.startingUp")), h("h2", "q", t("setup.waking")), h("p", "qhint", t("setup.wakingHint")));
   try {
-    const state = await api.setup(draft);
-    loadState(state);
+    loadState(await api.setup(draft));
     enterChat(true);
     const greeting = S.transcript[S.transcript.length - 1]?.text || "";
     figure.kick(1.2);
@@ -305,14 +339,14 @@ async function wake() {
     speaker.push(greeting, true);
     $("live").textContent = greeting;
   } catch (err) {
-    S.mode = "boot";
+    S.stage = "boot";
     refresh();
-    setupEl.replaceChildren(h("p", "eyebrow", "Starting up"), h("h2", "q", "Not awake yet."), h("p", "qhint", explain(err.code, err.message, "Your companion")));
+    setupEl.replaceChildren(h("p", "eyebrow", t("setup.startingUp")), h("h2", "q", t("setup.failed")), h("p", "qhint", explain(err.code, err.message)));
     const actions = h("div", "actions");
-    const back = h("button", "pill ghost", "Back");
+    const back = h("button", "pill ghost", t("setup.back"));
     back.type = "button";
-    back.onclick = () => renderStep(STEPS.length - 1);
-    const again = h("button", "pill", "Try again");
+    back.onclick = () => renderStep(steps().length - 1);
+    const again = h("button", "pill", t("setup.tryAgain"));
     again.type = "button";
     again.onclick = wake;
     actions.append(back, again);
@@ -326,22 +360,26 @@ function loadState(state) {
   S.profile = state.profile;
   S.memories = state.memories || [];
   S.transcript = state.transcript || [];
+  S.corrections = state.corrections || [];
+  S.mode = state.mode === "practice" ? "practice" : "companion";
   speaker.serverAvailable = state.voice === "server";
+  speaker.lang = state.speechLang || "";
+  listener.lang = state.speechLang || "";
+  t = makeT(state.ui);
+  translatePage(t);
 }
 
 function enterChat(fresh) {
-  S.mode = "chat";
+  S.stage = "chat";
   app.classList.remove("boot");
   setupEl.hidden = true;
   logEl.hidden = false;
   dock.hidden = false;
   $("tools").hidden = false;
   setName(S.profile.companionName, fresh);
-  ta.placeholder = "Talk to " + S.profile.companionName + "…";
+  ta.placeholder = t("chat.placeholder", { name: S.profile.companionName });
   micBtn.hidden = !listener.supported;
-  $("hint").textContent = listener.supported
-    ? "Tap the mic and just talk. Tap the figure or press Esc to interrupt."
-    : "Voice input needs Chrome, Edge or Safari. You can still type, and replies are still spoken.";
+  $("hint").textContent = t(listener.supported ? "chat.hint" : "chat.hintNoMic");
   renderLog();
   refresh();
 }
@@ -352,7 +390,7 @@ function songRow(song) {
   const wrap = h("div", "song-row"), b = h("button", "song");
   b.type = "button";
   b.innerHTML = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 2.8v10.4L13 8z" fill="currentColor"/></svg>';
-  b.append(document.createTextNode("Play “" + song.title + "”"));
+  b.append(document.createTextNode(t("chat.play", { title: song.title })));
   b.onclick = () => {
     speaker.stop();
     music.play(song);
@@ -361,18 +399,42 @@ function songRow(song) {
   return wrap;
 }
 
+/** A correction card under the learner's message: the better phrasing, then why. */
+function fixCard(c) {
+  const card = h("div", "fix");
+  card.dataset.forAt = String(c.forAt);
+  card.append(h("b", null, t("chat.better") + " "), document.createTextNode("“" + c.better + "”"));
+  if (c.why) card.append(h("span", "why", c.why));
+  return card;
+}
+
 function addRow(m, prevAt) {
   let stamp = null;
   if (!prevAt || m.at - prevAt > 2 * 3600e3) {
-    stamp = h("p", "stamp", stampText(m.at));
+    stamp = h("p", "stamp", stampText(m.at, new Date(), { today: t("stamp.today"), yesterday: t("stamp.yesterday") }));
     logEl.append(stamp);
   }
   const row = h("div", "m " + (m.role === "user" ? "m-u" : "m-a"));
-  const txt = h("span", "txt", m.text);
+  const txt = h("span", "txt");
+  if (m.role === "user") txt.textContent = m.text;
+  else renderText(txt, m.text);
   row.append(txt);
   if (m.song) row.append(songRow(m.song));
   logEl.append(row);
+  if (m.role === "user") {
+    row.dataset.at = String(m.at);
+    for (const c of S.corrections) if (c.forAt === m.at) logEl.append(fixCard(c));
+  }
   return { row, txt, stamp };
+}
+
+/** Shows a correction that arrived mid-reply under the message it's about. */
+function showCorrection(c) {
+  const row = logEl.querySelector(`.m-u[data-at="${c.forAt}"]`);
+  if (!row) return;
+  let after = row;
+  while (after.nextElementSibling?.classList.contains("fix")) after = after.nextElementSibling;
+  after.after(fixCard(c));
 }
 
 function renderLog() {
@@ -390,17 +452,11 @@ function scrollEnd(force) {
   if (force || near) logEl.scrollTop = logEl.scrollHeight;
 }
 
-function explain(code, message, who) {
-  switch (code) {
-    case "auth": return "Claude rejected the server's credentials. Check ANTHROPIC_API_KEY (or run `ant auth login`), then restart the server.";
-    case "config": return "The server has no Claude credentials. Add ANTHROPIC_API_KEY to the .env file (or run `ant auth login`), then restart the server.";
-    case "rate_limited": return "Claude is rate limiting this key right now. Give it a minute, then try again.";
-    case "network": return "The server couldn't reach Claude. Check the internet connection, then try again.";
-    case "offline": return "Can't reach the Lei server. Make sure `npm start` is still running, then try again.";
-    case "refused": return who + " won’t answer that one. Try putting it another way.";
-    case "setup": return "The reply didn’t come back in a usable form. Try again.";
-    default: return "Something went wrong on the way to Claude" + (message ? ": " + message : ".");
-  }
+function explain(code, message) {
+  const name = S.profile?.companionName || "Lei";
+  if (["auth", "config", "rate_limited", "network", "offline", "setup"].includes(code)) return t("err." + code);
+  if (code === "refused") return t("err.refused", { name });
+  return message ? t("err.defaultWith", { message }) : t("err.default");
 }
 
 function notice(text, retry) {
@@ -408,7 +464,7 @@ function notice(text, retry) {
   box.setAttribute("role", "status");
   box.append(h("p", null, text));
   if (retry) {
-    const b = h("button", "pill", "Try again");
+    const b = h("button", "pill", t("setup.tryAgain"));
     b.type = "button";
     b.onclick = () => {
       box.remove();
@@ -431,7 +487,7 @@ function finalizeLive(live, keep) {
   m.text = m.text.trim();
   if (live.song && keep) m.song = live.song;
   if (keep && (m.text || m.song)) {
-    live.view.txt.textContent = m.text;
+    renderText(live.view.txt, m.text);
     if (m.song && !live.view.row.querySelector(".song-row")) live.view.row.append(songRow(m.song));
     S.transcript.push(m);
   } else {
@@ -448,7 +504,7 @@ async function respond(body, quiet = false) {
   const view = addRow(msg, lastAt());
   const dots = h("span", "dots");
   dots.innerHTML = "<i></i><i></i><i></i>";
-  dots.setAttribute("aria-label", "Thinking");
+  dots.setAttribute("aria-label", t("status.thinking"));
   view.txt.append(dots);
   const live = { ctl, msg, view, gotText: false, done: false, song: null };
   S.live = live;
@@ -466,14 +522,17 @@ async function respond(body, quiet = false) {
         if (e.type === "text") {
           live.gotText = true;
           msg.text += e.delta;
-          view.txt.textContent = msg.text.trim();
+          renderText(view.txt, msg.text.trim());
           speaker.push(msg.text);
           scrollEnd();
           refresh();
         } else if (e.type === "memory") {
           S.memories.push(e.memory);
           if (!$("memSheet").hidden) renderMemories();
-          toast("Remembered: " + e.memory.text);
+          toast(t("toast.remembered", { text: e.memory.text }));
+        } else if (e.type === "correction") {
+          S.corrections.push(e.correction);
+          showCorrection(e.correction);
         } else if (e.type === "song") {
           live.song = e.song;
         } else if (e.type === "done") {
@@ -500,7 +559,7 @@ async function respond(body, quiet = false) {
     if (msg.text) $("live").textContent = msg.text;
   } else {
     speaker.stop();
-    if (!quiet) notice(explain(failure.code, failure.message, S.profile.companionName), !["refused", "auth", "config"].includes(failure.code));
+    if (!quiet) notice(explain(failure.code, failure.message), !["refused", "auth", "config"].includes(failure.code));
   }
   refresh();
   scrollEnd();
@@ -583,21 +642,19 @@ $("memBtn").onclick = () => openSheet("memSheet");
 $("setBtn").onclick = () => openSheet("setSheet");
 $("toast").onclick = () => {
   $("toast").hidden = true;
-  if (S.mode === "chat") openSheet("memSheet");
+  if (S.stage === "chat") openSheet("memSheet");
 };
 
 function renderMemories() {
-  const list = $("memList"), name = S.profile?.companionName || "Your companion";
+  const list = $("memList"), name = S.profile?.companionName || "Lei";
   list.replaceChildren();
-  $("memNote").textContent = S.memories.length
-    ? name + " keeps these between conversations. Remove anything you’d rather not have remembered."
-    : "Nothing yet. As you talk, " + name + " saves small notes here, like the names of people in your life or plans you mention. You can remove any of them.";
+  $("memNote").textContent = t(S.memories.length ? "mem.some" : "mem.none", { name });
   for (const m of S.memories.slice().reverse()) {
     const li = h("li", "mem"), body = h("div", "mem-body");
-    body.append(h("p", null, m.text), h("span", "mem-date", new Date(m.at).toLocaleDateString([], { month: "short", day: "numeric", year: "numeric" })));
-    const b = h("button", "mini", "Forget");
+    body.append(h("p", null, m.text), h("span", "mem-date", new Date(m.at).toLocaleDateString(t.lang, { month: "short", day: "numeric", year: "numeric" })));
+    const b = h("button", "mini", t("mem.forget"));
     b.type = "button";
-    b.setAttribute("aria-label", "Forget: " + m.text);
+    b.setAttribute("aria-label", t("mem.forget") + ": " + m.text);
     b.onclick = async () => {
       b.disabled = true;
       try {
@@ -605,11 +662,21 @@ function renderMemories() {
         renderMemories();
       } catch (err) {
         b.disabled = false;
-        toast(explain(err.code, err.message, name));
+        toast(explain(err.code, err.message));
       }
     };
     li.append(body, b);
     list.append(li);
+  }
+  $("fixGroup").hidden = !practice();
+  const fixes = $("fixList");
+  fixes.replaceChildren();
+  $("fixNote").textContent = S.corrections.length ? "" : t("mem.correctionsNone");
+  for (const c of S.corrections.slice().reverse().slice(0, 50)) {
+    const li = h("li", "mem"), body = h("div", "mem-body");
+    body.append(h("p", null, "“" + c.better + "”"), h("span", "mem-date", c.said + (c.why ? " · " + c.why : "")));
+    li.append(body);
+    fixes.append(li);
   }
 }
 
@@ -617,7 +684,7 @@ function fillVoiceSelect() {
   const sel = $("voiceSel");
   const list = voiceChoices(14);
   sel.replaceChildren();
-  if (!list.length) sel.append(h("option", null, "No voices available"));
+  if (!list.length) sel.append(h("option", null, t("voice.none")));
   const current = list.some((c) => c.id === prefs.voice) ? prefs.voice : list[0]?.id;
   for (const c of list) {
     const o = h("option", null, c.label + " · " + c.sub);
@@ -637,9 +704,7 @@ function syncSettings() {
   $("rateOut").textContent = Number(prefs.rate).toFixed(2).replace(/\.?0+$/, "") + "×";
   $("autoListen").checked = prefs.autoListen;
   $("autoListen").disabled = !listener.supported;
-  $("micNote").textContent = listener.supported
-    ? "Listening pauses while " + S.profile.companionName + " is talking, so the mic doesn't pick up the voice."
-    : "This browser has no speech recognition. Use Chrome, Edge or Safari to talk out loud.";
+  $("micNote").textContent = listener.supported ? t("set.micNote", { name: S.profile.companionName }) : t("set.micNoteNone");
   $("renameIn").value = S.profile.companionName;
 }
 
@@ -676,22 +741,19 @@ $("renameForm").onsubmit = async (e) => {
   try {
     loadState(await api.rename(n));
     setName(S.profile.companionName, true);
-    ta.placeholder = "Talk to " + S.profile.companionName + "…";
-    toast("Renamed to " + S.profile.companionName);
+    ta.placeholder = t("chat.placeholder", { name: S.profile.companionName });
+    toast(t("toast.renamed", { name: S.profile.companionName }));
   } catch (err) {
-    toast(explain(err.code, err.message, S.profile.companionName));
+    toast(explain(err.code, err.message));
   }
 };
 
 let confirmKind = "";
 function askConfirm(kind) {
   confirmKind = kind;
-  const n = S.profile.companionName;
-  $("confirmText").textContent =
-    kind === "clear"
-      ? "This erases your conversation with " + n + ". Name and memories stay."
-      : "This erases " + n + "’s name, memories and your whole conversation. You’ll set up a new companion from scratch.";
-  $("confirmYes").textContent = kind === "clear" ? "Erase conversation" : "Erase everything";
+  const name = S.profile.companionName;
+  $("confirmText").textContent = t(kind === "clear" ? "confirm.clear" : "confirm.reset", { name });
+  $("confirmYes").textContent = t(kind === "clear" ? "confirm.eraseConv" : "confirm.eraseAll");
   $("confirm").hidden = false;
   $("confirmNo").focus({ preventScroll: true });
 }
@@ -706,15 +768,15 @@ $("confirmYes").onclick = async () => {
       loadState(await api.clearTranscript());
       renderLog();
       closeSheet($("setSheet"));
-      toast("Conversation cleared");
+      toast(t("toast.cleared"));
     } else {
       loadState(await api.reset());
-      draft = { userName: "", about: "", onMind: "" };
+      draft = { userName: "", about: "", onMind: "", level: "intermediate", goal: "" };
       closeSheet($("setSheet"));
       enterIntro();
     }
   } catch (err) {
-    toast(explain(err.code, err.message, S.profile.companionName));
+    toast(explain(err.code, err.message));
   }
 };
 
@@ -724,9 +786,9 @@ async function start() {
   let state;
   try {
     state = await api.state();
-  } catch (err) {
-    setupEl.replaceChildren(h("p", "eyebrow", "Offline"), h("h2", "q", "Can’t reach the Lei server."), h("p", "qhint", "Start it with `npm start`, then reload this page."));
-    $("statusText").textContent = "Offline";
+  } catch {
+    setupEl.replaceChildren(h("p", "eyebrow", t("status.offline")), h("h2", "q", t("offline.title")), h("p", "qhint", t("offline.hint")));
+    $("statusText").textContent = t("status.offline");
     return;
   }
   loadState(state);

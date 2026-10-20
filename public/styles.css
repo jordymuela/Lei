@@ -116,6 +116,13 @@ button { cursor: pointer; }
   background: var(--veil); border: 1px solid var(--hair); border-radius: 999px;
 }
 .song svg { width: 14px; height: 14px; flex: none; }
+.aside { display: block; margin-top: 6px; font-family: var(--font-ui); font-style: normal; font-size: 15px; line-height: 1.45; color: var(--ink-soft); }
+.fix {
+  align-self: flex-end; max-width: min(82%, 28rem); margin-top: -10px; padding: 10px 14px; border-radius: 14px;
+  border: 1px solid var(--hair); background: var(--veil); font-size: 14px; line-height: 1.45; text-align: left;
+}
+.fix b { font-weight: 500; }
+.fix .why { display: block; color: var(--ink-soft); }
 .notice {
   display: flex; flex-direction: column; gap: 12px; padding: 14px 16px; border-radius: 16px;
   background: var(--veil); border: 1px solid var(--hair); font-size: 15px;

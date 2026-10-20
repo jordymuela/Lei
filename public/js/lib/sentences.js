@@ -18,12 +18,15 @@ export function lastBoundary(text) {
 }
 
 /**
- * Removes things a voice would read out literally: markdown marks and emoji.
+ * Removes what the voice shouldn't say: [bracketed asides] (practice mode
+ * puts help in the learner's own language there; it's shown, not spoken),
+ * markdown marks and emoji.
  * @param {string} text
  * @returns {string}
  */
 export function speakable(text) {
   return String(text || "")
+    .replace(/\[[^\]]*\]?/g, "")
     .replace(/[*_#`~>|]/g, "")
     .replace(/\p{Extended_Pictographic}/gu, "")
     .replace(/\s+/g, " ")
@@ -31,6 +34,19 @@ export function speakable(text) {
 }
 
 /** Remembers how much of a growing reply has already been handed to the voice. */
+/**
+ * Splits text into plain runs and [bracketed asides] for display, brackets removed.
+ * @param {string} text
+ * @returns {{ text: string, aside: boolean }[]}
+ */
+export function splitAsides(text) {
+  return String(text || "")
+    .split(/(\[[^\]]*\]?)/)
+    .filter(Boolean)
+    .map((part) => (part.startsWith("[") ? { text: part.replace(/^\[|\]$/g, "").trim(), aside: true } : { text: part, aside: false }))
+    .filter((p) => p.text);
+}
+
 export class SentenceFeed {
   constructor() {
     this.spoken = 0;
@@ -48,7 +64,10 @@ export class SentenceFeed {
    * @returns {string}
    */
   next(text, final = false) {
-    const rest = text.slice(this.spoken);
+    let rest = text.slice(this.spoken);
+    // Never cut inside an [aside] that hasn't closed yet, or half of it would be spoken.
+    const open = rest.lastIndexOf("[");
+    if (!final && open > rest.lastIndexOf("]")) rest = rest.slice(0, open);
     const cut = final ? rest.length : lastBoundary(rest);
     if (!cut) return "";
     this.spoken += cut;

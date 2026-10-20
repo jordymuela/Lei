@@ -57,7 +57,12 @@ const publicState = (s: State) => ({
   profile: s.profile,
   memories: s.memories,
   transcript: s.transcript,
+  corrections: s.corrections,
   voice: ttsEnabled(config) ? "server" : "browser",
+  mode: config.mode,
+  // In practice mode the page speaks the learner's language and listens for the target one.
+  ui: config.mode === "practice" ? config.practice.native : null,
+  speechLang: config.mode === "practice" ? config.practice.target : null,
 });
 
 /** Maps an Anthropic API error to a code the page knows how to explain. */
@@ -89,7 +94,7 @@ async function chat(req: IncomingMessage, res: ServerResponse): Promise<void> {
   } else if (body.nudge === "welcome-back") {
     const last = state.transcript[state.transcript.length - 1];
     if (!last) throw new HttpError(409, "Nothing to come back to");
-    nudge = welcomeBackNudge(state.profile, Date.now() - last.at);
+    nudge = welcomeBackNudge(state.profile, Date.now() - last.at, config.mode === "practice");
   } else {
     throw new HttpError(400, "Send text, retry, or a nudge");
   }
@@ -113,6 +118,7 @@ async function chat(req: IncomingMessage, res: ServerResponse): Promise<void> {
         text: (delta) => send({ type: "text", delta }),
         memory: (memory) => send({ type: "memory", memory }),
         song: (song) => send({ type: "song", song }),
+        correction: (correction) => send({ type: "correction", correction }),
       },
     });
     let saved = null;
@@ -141,7 +147,14 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 
   if (p === "/api/setup" && m === "POST") {
     const body = await readJson(req);
-    const answers = { userName: str(body.userName, 40), about: str(body.about, 200), onMind: str(body.onMind, 600) };
+    const level = ["beginner", "intermediate", "advanced"].includes(String(body.level)) ? String(body.level) : "";
+    const answers = {
+      userName: str(body.userName, 40),
+      about: str(body.about, 200),
+      onMind: str(body.onMind, 600),
+      level,
+      goal: str(body.goal, 300),
+    };
     if (!answers.userName) throw new HttpError(400, "A name is required");
     try {
       const { name, greeting } = await nameCompanion(client, config, answers);

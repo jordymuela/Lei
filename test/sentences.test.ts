@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { SentenceFeed, lastBoundary, speakable } from "../public/js/lib/sentences.js";
+import { SentenceFeed, lastBoundary, speakable, splitAsides } from "../public/js/lib/sentences.js";
 
 test("lastBoundary finds the end of the last finished sentence", () => {
   assert.equal(lastBoundary("Hello there. How are"), "Hello there. ".length);
@@ -21,4 +21,19 @@ test("SentenceFeed hands out each finished sentence once", () => {
 
 test("speakable strips markdown and emoji", () => {
   assert.equal(speakable("**Hello** _you_ 🎉 there"), "Hello you there");
+});
+
+test("bracketed asides are shown but never spoken", () => {
+  assert.equal(speakable("Nice try! [Use o passado aqui.] Say it again?"), "Nice try! Say it again?");
+  assert.deepEqual(splitAsides("Nice try! [Use o passado.] Again?"), [
+    { text: "Nice try! ", aside: false },
+    { text: "Use o passado.", aside: true },
+    { text: " Again?", aside: false },
+  ]);
+});
+
+test("SentenceFeed waits for an open aside to close", () => {
+  const feed = new SentenceFeed();
+  assert.equal(feed.next("Good. [Use o passado. Tente"), "Good. ");
+  assert.equal(feed.next("Good. [Use o passado. Tente de novo.] Again? "), "[Use o passado. Tente de novo.] Again? ");
 });

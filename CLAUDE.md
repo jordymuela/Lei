@@ -31,6 +31,15 @@ Needs Node ≥ 22.18. Node runs the `.ts` files directly by stripping types, whi
 
 **Persistence.** `Store` (`server/store.ts`) holds the whole `State` (profile, memories, transcript) in memory. It writes the file atomically and one write at a time. All mutations must go through `store.update()`. The server is the source of truth. The page keeps a copy for rendering and stores only per-device voice settings in `localStorage` (`lei.prefs`). On an abort the server still saves the partial reply; on a refusal or error it saves nothing.
 
+**Two modes, one codebase.** `LEI_MODE` (`config.mode`) picks `companion` (the Her-style friend) or `practice` (an English speaking partner for Portuguese/Spanish speakers). The mode changes:
+- the persona (`personaPrompt` vs `practicePrompt`) and the naming prompt;
+- the tools (`toolsFor()`: companion gets `compose`, practice gets `correct`);
+- the setup questions (`steps()` in `app.js`).
+
+Practice mode also sends `ui` (the learner's language, for `i18n.js`) and `speechLang` (the target language, for `Listener` and `Speaker`) in `/api/state`. Corrections are stored in `State.corrections`, tied to the user message they belong to by `forAt`. Text the tutor writes in the learner's own language goes in `[square brackets]`: `speakable()` drops it from speech, and `splitAsides()` renders it as a quieter line.
+
+**Interface text.** All user-facing strings live in `public/js/i18n.js` (`en`, `pt`, `es`; missing keys fall back to English). Use `t("key", vars)` in `app.js` and `data-i18n` attributes in `index.html`; don't hard-code copy. The Portuguese and Spanish practice strings assume English is the target language.
+
 **Code shared by browser and server.** `public/js/lib/*.js` is plain ESM with no DOM access. The browser loads it directly and the server and tests import it. `notes.js` is the music score format (`NOTE:BEATS`, `+` for chords, `R` for rests): the server uses it to validate `compose` tool input, and `music.js` uses it to play songs. Keep these files DOM-free.
 
 **Prompt layout** (`server/prompt.ts`):
@@ -45,7 +54,7 @@ Needs Node ≥ 22.18. Node runs the `.ts` files directly by stripping types, whi
 - The defaults are model `claude-opus-5-5` and `output_config.effort: "low"`, chosen for voice latency. This model always thinks and rejects `thinking: {type: "disabled"}`, so lower effort is the only way to shorten replies. Don't add a disabled-thinking setting.
 - Tools (`server/tools.ts`) set `eager_input_streaming: true`, so the API doesn't validate their input. `runTool()` checks every field itself. Keep that validation when adding a tool, and keep the `stop_reason` checks in `runTurn()`: refusal drops the text, and tools cut off by `max_tokens` are never run.
 - Forced `tool_choice` is a 400 on this model. Steer tool use from the persona prompt.
-- First boot (`nameCompanion`) uses structured output (`output_config.format` with `NAMING_SCHEMA`).
+- First boot (`nameCompanion`) uses structured output (`output_config.format` with `NAMING_SCHEMA`). It is streamed and collected with `finalMessage()`, so that errors arrive as the same SDK classes as in chat turns.
 - `errorCode()` in `server/index.ts` maps SDK error classes to the short codes that `explain()` in `app.js` turns into user-facing text. Add a case to both when adding a new failure mode.
 
 ## Tests

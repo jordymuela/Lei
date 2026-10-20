@@ -24,6 +24,8 @@ export class Speaker {
     this.hooks = hooks;
     this.synth = "speechSynthesis" in window ? window.speechSynthesis : null;
     this.serverAvailable = false;
+    /** Language the voice speaks; empty = the browser's language. */
+    this.lang = "";
     this.enabled = true;
     /** A browser voice name, SERVER_VOICE, or "" for the best available. */
     this.voice = "";
@@ -62,9 +64,9 @@ export class Speaker {
     return this.serverAvailable && (this.voice === SERVER_VOICE || (!this.voice && !this.synth));
   }
 
-  /** Browser voices for the reader's language, best-sounding first. */
+  /** Browser voices for the speaking language, best-sounding first. */
   ranked() {
-    const lang = (navigator.language || "en").slice(0, 2).toLowerCase();
+    const lang = (this.lang || navigator.language || "en").slice(0, 2).toLowerCase();
     let pool = this.voices.filter((v) => (v.lang || "").toLowerCase().startsWith(lang));
     if (!pool.length) pool = this.voices.filter((v) => /^en/i.test(v.lang || ""));
     if (!pool.length) pool = this.voices.slice();
@@ -125,7 +127,7 @@ export class Speaker {
     this.stop();
     this.unlock();
     const v = this.voices.find((x) => x.name === voice);
-    this.say(previewLine(v?.lang || navigator.language), voice || this.voice || SERVER_VOICE);
+    this.say(previewLine(v?.lang || this.lang || navigator.language), voice || this.voice || SERVER_VOICE);
   }
 
   whenDone(fn) {

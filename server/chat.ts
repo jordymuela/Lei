@@ -8,10 +8,12 @@ import {
   historyMessages,
   namingPrompt,
   personaPrompt,
+  practiceNamingPrompt,
+  practicePrompt,
 } from "./prompt.ts";
-import { type Store, addMemory } from "./store.ts";
-import { TOOLS, runTool } from "./tools.ts";
-import type { Memory, Song } from "./types.ts";
+import { type Store, addCorrection, addMemory } from "./store.ts";
+import { runTool, toolsFor } from "./tools.ts";
+import type { Correction, Memory, Song } from "./types.ts";
 
 /** Most model rounds one reply may take (each tool call costs a round). */
 const MAX_ROUNDS = 6;
@@ -42,6 +44,7 @@ export interface TurnHandlers {
   text(delta: string): void;
   memory(memory: Memory): void;
   song(song: Song): void;
+  correction(correction: Correction): void;
 }
 
 export interface TurnResult {
@@ -66,10 +69,13 @@ export async function runTurn(opts: {
 }): Promise<TurnResult> {
   const { client, config, store, signal, on } = opts;
   const state = await store.load();
+  const practice = config.mode === "practice";
+  const persona = practice ? practicePrompt(state.profile!, config.practice) : personaPrompt(state.profile!);
   const system: Anthropic.Beta.BetaTextBlockParam[] = [
-    { type: "text", text: personaPrompt(state.profile!), cache_control: { type: "ephemeral" } },
+    { type: "text", text: persona, cache_control: { type: "ephemeral" } },
     { type: "text", text: contextPrompt(state, new Date()) },
   ];
+  const tools = toolsFor(config.mode);
   const messages = historyMessages(state);
   if (opts.nudge) messages.push({ role: "user", content: opts.nudge });
 
@@ -80,7 +86,7 @@ export async function runTurn(opts: {
   for (let round = 0; round < MAX_ROUNDS; round++) {
     let roundText = "";
     const stream = client.beta.messages.stream(
-      { ...base(config), max_tokens: 16000, system, messages, tools: TOOLS },
+      { ...base(config), max_tokens: 16000, system, messages, tools },
       { signal },
     );
     stream.on("text", (delta) => {
@@ -130,6 +136,14 @@ export async function runTurn(opts: {
         song = outcome.song;
         on.song(song);
       }
+      if (outcome.correction) {
+        let shown: Correction | null = null;
+        await store.update((s) => {
+          shown = addCorrection(s, outcome.correction!);
+        });
+        if (shown) on.correction(shown);
+        else Object.assign(outcome, { result: "Already shown for this message.", isError: true });
+      }
       results.push({ type: "tool_result", tool_use_id: call.id, content: outcome.result, is_error: outcome.isError });
     }
     messages.push({ role: "user", content: results });
@@ -152,7 +166,15 @@ export async function nameCompanion(
       ...base(config),
       max_tokens: 16000,
       output_config: { effort: config.effort, format: { type: "json_schema", schema: NAMING_SCHEMA } },
-      messages: [{ role: "user", content: namingPrompt(answers, new Date()) }],
+      messages: [
+        {
+          role: "user",
+          content:
+            config.mode === "practice"
+              ? practiceNamingPrompt(answers, config.practice, new Date())
+              : namingPrompt(answers, new Date()),
+        },
+      ],
     })
     .finalMessage();
   if (message.stop_reason === "refusal") throw new SetupError("declined");

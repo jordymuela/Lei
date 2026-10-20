@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { cleanName, contextPrompt, historyMessages, personaPrompt } from "../server/prompt.ts";
+import { cleanName, contextPrompt, historyMessages, personaPrompt, practicePrompt } from "../server/prompt.ts";
 import type { State } from "../server/types.ts";
 
 const profile = { userName: "Theo", about: "letter writer", onMind: "my sister moving", companionName: "Wren", createdAt: 0 };
@@ -9,6 +9,7 @@ test("history starts with a user turn even though the transcript opens with the 
   const state: State = {
     profile,
     memories: [],
+    corrections: [],
     transcript: [
       { role: "assistant", text: "Hi Theo, I'm Wren.", at: 1 },
       { role: "user", text: "hey", at: 2 },
@@ -23,7 +24,7 @@ test("history starts with a user turn even though the transcript opens with the 
 
 test("history keeps only the most recent turns", () => {
   const transcript = Array.from({ length: 50 }, (_, i) => ({ role: (i % 2 ? "assistant" : "user") as "user" | "assistant", text: "m" + i, at: i }));
-  const msgs = historyMessages({ profile, memories: [], transcript }, 10);
+  const msgs = historyMessages({ profile, memories: [], transcript, corrections: [] }, 10);
   assert.equal(msgs.length, 10);
   assert.equal(msgs[9].content, "m49");
 });
@@ -33,6 +34,7 @@ test("context mentions notes and a long gap", () => {
   const state: State = {
     profile,
     memories: [{ id: "a", text: "Sister Ana moved to Lisbon.", at: 0 }],
+    corrections: [{ id: "c", said: "I go yesterday", better: "I went yesterday", why: "", at: 9 * hour, forAt: 9 * hour }],
     transcript: [
       { role: "assistant", text: "Night.", at: 0 },
       { role: "user", text: "Morning!", at: 9 * hour },
@@ -41,6 +43,7 @@ test("context mentions notes and a long gap", () => {
   const ctx = contextPrompt(state, new Date(9 * hour));
   assert.match(ctx, /- Sister Ana moved to Lisbon\./);
   assert.match(ctx, /coming back after 9 hours away/);
+  assert.match(ctx, /"I go yesterday" -> "I went yesterday"/);
 });
 
 test("persona is stable for a profile, so it can be cached", () => {
@@ -53,4 +56,12 @@ test("cleanName keeps one capitalized word", () => {
   assert.equal(cleanName("Sol, of course"), "Sol");
   assert.equal(cleanName("🙂"), "");
   assert.equal(cleanName(undefined), "");
+});
+
+test("practice persona names both languages and the learner's level and goal", () => {
+  const p = practicePrompt({ ...profile, level: "beginner", goal: "a job interview" }, { native: "pt-BR", target: "en-US" });
+  assert.match(p, /native Brazilian Portuguese speaker practising spoken American English/);
+  assert.match(p, /Beginner\./);
+  assert.match(p, /a job interview/);
+  assert.match(p, /square brackets/);
 });
