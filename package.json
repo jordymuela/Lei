@@ -1,0 +1,24 @@
+{
+  "name": "lei",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A voice-first AI companion inspired by the film Her, built on Claude.",
+  "type": "module",
+  "engines": {
+    "node": ">=22.18"
+  },
+  "scripts": {
+    "start": "node --env-file-if-exists=.env server/index.ts",
+    "dev": "node --env-file-if-exists=.env --watch server/index.ts",
+    "test": "node --test \"test/**/*.test.ts\"",
+    "typecheck": "tsc --noEmit",
+    "check": "npm run typecheck && npm test"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.135.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.5",
+    "typescript": "^7.0.2"
+  }
+}

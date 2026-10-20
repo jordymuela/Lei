@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Lei</title>
+<meta name="color-scheme" content="light dark">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Jost:wght@200;300;400;500&family=Newsreader:ital,opsz,wght@0,6..72,300;0,6..72,400;1,6..72,300&display=swap">
+<link rel="stylesheet" href="/styles.css">
+<script type="module" src="/js/app.js"></script>
+</head>
+<body>
+<div class="app boot" id="app">
+  <header class="top">
+    <div class="mark">
+      <h1 class="name" id="companionName">her</h1>
+      <p class="status" id="status"><i></i><span id="statusText">Starting</span></p>
+    </div>
+    <nav class="tools" id="tools" aria-label="Controls" hidden>
+      <button class="tbtn" id="memBtn" type="button">Memories</button>
+      <button class="tbtn" id="setBtn" type="button">Settings</button>
+    </nav>
+  </header>
+
+  <button class="stage" id="stage" type="button" aria-label="Interrupt" tabindex="-1"><canvas id="figure" aria-hidden="true"></canvas></button>
+
+  <main class="main">
+    <section class="setup" id="setup" aria-live="polite">
+      <p class="eyebrow">A companion inspired by the film Her</p>
+      <h2 class="q">Someone to talk to. Curious about you, honest about what it is, and a little more yours every time you talk.</h2>
+      <p class="qhint">It picks its own name, talks with you out loud, and keeps notes about what matters to you. You can read and erase those notes anytime.</p>
+      <div class="actions"><button class="pill" id="beginBtn" type="button">Begin setup</button><span class="fine">Four questions</span></div>
+    </section>
+    <div class="log" id="log" hidden></div>
+    <button class="toast" id="toast" type="button" hidden></button>
+  </main>
+
+  <footer class="dock" id="dock" hidden>
+    <p class="heard" id="heard" aria-live="polite"></p>
+    <form class="composer" id="composer" autocomplete="off">
+      <button class="mic" id="micBtn" type="button" aria-pressed="false" aria-label="Start talking">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21"/></svg>
+      </button>
+      <div class="field">
+        <label class="sr" for="say">Message</label>
+        <textarea id="say" rows="1" enterkeyhint="send" placeholder="Say something…"></textarea>
+      </div>
+      <button class="send empty" id="sendBtn" type="submit" aria-label="Send">
+        <svg class="i-send" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h13M13 6.5l5.5 5.5-5.5 5.5"/></svg>
+        <svg class="i-stop" viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="7" width="10" height="10" rx="2.2" fill="currentColor"/></svg>
+      </button>
+    </form>
+    <p class="hint" id="hint">Tap the mic and just talk. Tap the figure or press Esc to interrupt.</p>
+  </footer>
+</div>
+
+<div class="sheet-wrap" id="memSheet" hidden>
+  <div class="scrim" data-close></div>
+  <section class="sheet" role="dialog" aria-modal="true" aria-labelledby="memTitle">
+    <div class="sheet-head"><h2 id="memTitle">Memories</h2><button class="tbtn" type="button" data-close>Close</button></div>
+    <p class="sheet-note" id="memNote"></p>
+    <ul class="mem-list" id="memList"></ul>
+  </section>
+</div>
+
+<div class="sheet-wrap" id="setSheet" hidden>
+  <div class="scrim" data-close></div>
+  <section class="sheet" role="dialog" aria-modal="true" aria-labelledby="setTitle">
+    <div class="sheet-head"><h2 id="setTitle">Settings</h2><button class="tbtn" type="button" data-close>Close</button></div>
+
+    <div class="group">
+      <h3>Voice</h3>
+      <label class="check" for="voiceOn"><input type="checkbox" id="voiceOn"><span>Speak replies out loud</span></label>
+      <label class="stack" for="voiceSel"><span>Voice</span><select id="voiceSel"></select></label>
+      <label class="stack" for="rate"><span>Speed <output id="rateOut" for="rate">1×</output></span><input type="range" id="rate" min="0.8" max="1.25" step="0.05" value="1"></label>
+    </div>
+
+    <div class="group">
+      <h3>Listening</h3>
+      <label class="check" for="autoListen"><input type="checkbox" id="autoListen"><span>Keep listening after each reply</span></label>
+      <p class="sheet-note" id="micNote"></p>
+    </div>
+
+    <div class="group">
+      <h3>Name</h3>
+      <form class="inline" id="renameForm">
+        <label class="sr" for="renameIn">Name</label>
+        <input class="line-input small" id="renameIn" maxlength="20" autocomplete="off">
+        <button class="pill ghost" type="submit">Rename</button>
+      </form>
+    </div>
+
+    <div class="group">
+      <h3>Memory and history</h3>
+      <p class="sheet-note">Everything is saved on this computer, in the server's data folder.</p>
+      <div class="row-btns">
+        <button class="pill ghost" id="clearBtn" type="button">Clear conversation</button>
+        <button class="pill ghost" id="resetBtn" type="button">Start over</button>
+      </div>
+      <div class="confirm" id="confirm" hidden>
+        <p id="confirmText"></p>
+        <div class="row-btns"><button class="pill ghost" id="confirmNo" type="button">Keep it</button><button class="pill" id="confirmYes" type="button">Erase</button></div>
+      </div>
+    </div>
+  </section>
+</div>
+
+<p class="sr" id="live" aria-live="polite"></p>
+</body>
+</html>

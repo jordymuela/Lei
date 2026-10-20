@@ -1,0 +1,172 @@
+import Anthropic from "@anthropic-ai/sdk";
+import { type Config, useFallbacks } from "./config.ts";
+import {
+  NAMING_SCHEMA,
+  type SetupAnswers,
+  cleanName,
+  contextPrompt,
+  historyMessages,
+  namingPrompt,
+  personaPrompt,
+} from "./prompt.ts";
+import { type Store, addMemory } from "./store.ts";
+import { TOOLS, runTool } from "./tools.ts";
+import type { Memory, Song } from "./types.ts";
+
+/** Most model rounds one reply may take (each tool call costs a round). */
+const MAX_ROUNDS = 6;
+
+type Block = Anthropic.Beta.BetaContentBlock;
+
+/** Request fields shared by every call: model, effort, and refusal fallback where the model supports it. */
+function base(config: Config) {
+  const fallback = useFallbacks(config.model)
+    ? { betas: ["server-side-fallback-2026-07-01"], fallbacks: "default" as const }
+    : {};
+  return { model: config.model, output_config: { effort: config.effort }, ...fallback };
+}
+
+/**
+ * The part of an assistant turn that may be sent back. After a mid-reply
+ * fallback, blocks before the last `fallback` marker belong to the model
+ * that declined: only its text is kept; its thinking and tool calls are
+ * dropped (and those tool calls are never run).
+ */
+export function echoable(content: Block[]): Block[] {
+  const boundary = content.findLastIndex((b) => b.type === "fallback");
+  if (boundary < 0) return content;
+  return content.filter((b, i) => i >= boundary || b.type === "text");
+}
+
+export interface TurnHandlers {
+  text(delta: string): void;
+  memory(memory: Memory): void;
+  song(song: Song): void;
+}
+
+export interface TurnResult {
+  text: string;
+  song?: Song;
+  /** done: finished normally. aborted: the listener interrupted. refused: declined by every model; drop the text. */
+  end: "done" | "aborted" | "refused" | "truncated";
+}
+
+/**
+ * One reply from the companion, streamed. Runs the tool loop (remember,
+ * compose) until Claude stops asking for tools. The user's message must
+ * already be in the transcript; `nudge` adds an unsaved instruction turn.
+ */
+export async function runTurn(opts: {
+  client: Anthropic;
+  config: Config;
+  store: Store;
+  nudge?: string;
+  signal: AbortSignal;
+  on: TurnHandlers;
+}): Promise<TurnResult> {
+  const { client, config, store, signal, on } = opts;
+  const state = await store.load();
+  const system: Anthropic.Beta.BetaTextBlockParam[] = [
+    { type: "text", text: personaPrompt(state.profile!), cache_control: { type: "ephemeral" } },
+    { type: "text", text: contextPrompt(state, new Date()) },
+  ];
+  const messages = historyMessages(state);
+  if (opts.nudge) messages.push({ role: "user", content: opts.nudge });
+
+  let text = "";
+  let song: Song | undefined;
+  let jsonRetries = 0;
+
+  for (let round = 0; round < MAX_ROUNDS; round++) {
+    let roundText = "";
+    const stream = client.beta.messages.stream(
+      { ...base(config), max_tokens: 16000, system, messages, tools: TOOLS },
+      { signal },
+    );
+    stream.on("text", (delta) => {
+      if (!roundText && text) {
+        text += "\n\n";
+        on.text("\n\n");
+      }
+      roundText += delta;
+      text += delta;
+      on.text(delta);
+    });
+
+    let message: Anthropic.Beta.BetaMessage;
+    try {
+      message = await stream.finalMessage();
+      jsonRetries = 0;
+    } catch (err) {
+      if (err instanceof Anthropic.APIUserAbortError || signal.aborted) return { text, song, end: "aborted" };
+      if (err instanceof Anthropic.APIError) throw err;
+      // A streamed tool input that isn't parseable JSON. Re-issue the round
+      // only if nothing was said yet, so the listener never hears it twice.
+      if (roundText || jsonRetries++ >= 2) throw err;
+      round--;
+      continue;
+    }
+
+    if (message.stop_reason === "refusal") return { text: "", end: "refused" };
+    const content = echoable(message.content);
+    const calls = content.filter((b): b is Anthropic.Beta.BetaToolUseBlock => b.type === "tool_use");
+    if (message.stop_reason !== "tool_use" || calls.length === 0) {
+      return { text, song, end: message.stop_reason === "max_tokens" ? "truncated" : "done" };
+    }
+
+    messages.push({ role: "assistant", content });
+    const results: Anthropic.Beta.BetaToolResultBlockParam[] = [];
+    for (const call of calls) {
+      const outcome = runTool(call.name, call.input);
+      if (outcome.fact) {
+        let saved: Memory | null = null;
+        await store.update((s) => {
+          saved = addMemory(s, outcome.fact!);
+        });
+        if (saved) on.memory(saved);
+        else Object.assign(outcome, { result: "Already in your notes.", isError: true });
+      }
+      if (outcome.song) {
+        song = outcome.song;
+        on.song(song);
+      }
+      results.push({ type: "tool_result", tool_use_id: call.id, content: outcome.result, is_error: outcome.isError });
+    }
+    messages.push({ role: "user", content: results });
+  }
+  return { text, song, end: "done" };
+}
+
+/** Thrown when the companion couldn't be named (refusal or unreadable reply). */
+export class SetupError extends Error {}
+
+/** First boot: the companion picks its name and writes its greeting. */
+export async function nameCompanion(
+  client: Anthropic,
+  config: Config,
+  answers: SetupAnswers,
+): Promise<{ name: string; greeting: string }> {
+  // Streamed (then collected) so failures surface as the same SDK error classes as chat turns.
+  const message = await client.beta.messages
+    .stream({
+      ...base(config),
+      max_tokens: 16000,
+      output_config: { effort: config.effort, format: { type: "json_schema", schema: NAMING_SCHEMA } },
+      messages: [{ role: "user", content: namingPrompt(answers, new Date()) }],
+    })
+    .finalMessage();
+  if (message.stop_reason === "refusal") throw new SetupError("declined");
+  const block = message.content.find((b): b is Anthropic.Beta.BetaTextBlock => b.type === "text");
+  let parsed: { name?: unknown; greeting?: unknown };
+  try {
+    parsed = JSON.parse(block?.text ?? "");
+  } catch {
+    throw new SetupError("unreadable reply");
+  }
+  const name = cleanName(parsed.name) || "Juniper";
+  const greeting =
+    typeof parsed.greeting === "string" && parsed.greeting.trim()
+      ? parsed.greeting.trim()
+      : `Hi, ${answers.userName}. I'm ${name}. I'm really glad you're here.`;
+  return { name, greeting };
+}
