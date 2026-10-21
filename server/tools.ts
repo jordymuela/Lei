@@ -1,6 +1,16 @@
 import type Anthropic from "@anthropic-ai/sdk";
 import { normalizeSong, songSeconds } from "../public/js/lib/notes.js";
-import { type Activity, type ComputerContext, ToolError, findFiles, listDirectory, openTarget, readTextFile, systemStatus } from "./computer.ts";
+import {
+  type Activity,
+  type ComputerContext,
+  findFiles,
+  listDirectory,
+  openTarget,
+  readTextFile,
+  runCommand,
+  systemStatus,
+  writeTextFile,
+} from "./computer.ts";
 import type { Mode } from "./config.ts";
 import { parseDue } from "./reminders.ts";
 import { type Store, addReminder } from "./store.ts";
@@ -63,8 +73,8 @@ const CORRECT: Anthropic.Beta.BetaTool = {
   },
 };
 
-// The computer tools: read-only looks at the machine the server runs on,
-// plus reminders. See computer.ts for what each may touch.
+// The computer tools. Looking runs straight away; anything that changes the
+// machine waits for the person's OK (see computer.ts).
 const tool = (name: string, description: string, properties: Record<string, unknown>, required: string[] = []): Anthropic.Beta.BetaTool => ({
   name,
   description,
@@ -100,9 +110,28 @@ const COMPUTER: Anthropic.Beta.BetaTool[] = [
   ),
   tool(
     "open",
-    "Open a web page (https://...) in the default browser, or a folder in the file manager. Files and apps can't be opened.",
-    { target: { type: "string", description: "A URL or a folder path" } },
+    "Open a web page (https://...) or a folder right away, or a file or an app by name (e.g. Spotify, Notes) after the person approves.",
+    { target: { type: "string", description: "A URL, a folder or file path, or an app name" } },
     ["target"],
+  ),
+  tool(
+    "write_file",
+    "Create a text file, replace one, or add to the end of one. The person sees the path and the content and must approve first.",
+    {
+      path: { type: "string" },
+      content: { type: "string" },
+      append: { type: "boolean", description: "Add to the end instead of replacing the file" },
+    },
+    ["path", "content"],
+  ),
+  tool(
+    "run_command",
+    "Run one shell command on this computer (zsh on a Mac) and get its exit code and output, e.g. osascript to control apps, or a script. The person sees the exact command and must approve first. No sudo. Stops after 60 seconds; there is no input, so avoid interactive commands.",
+    {
+      command: { type: "string" },
+      cwd: { type: "string", description: "Folder to run it in; defaults to the allowed root" },
+    },
+    ["command"],
   ),
   tool(
     "set_reminder",
@@ -209,6 +238,14 @@ export async function runComputerTool(name: string, input: unknown, deps: AgentD
       case "open":
         deps.activity({ kind: "open", target: text(a.target) });
         return { result: await openTarget(deps.computer, text(a.target)), isError: false };
+      case "write_file":
+        if (!text(a.path) || typeof a.content !== "string") return fail('Error: "path" and "content" are required.');
+        deps.activity({ kind: "write", target: text(a.path) });
+        return { result: await writeTextFile(deps.computer, text(a.path), a.content, a.append === true), isError: false };
+      case "run_command":
+        if (!text(a.command)) return fail('Error: "command" is required.');
+        deps.activity({ kind: "run", target: text(a.command) });
+        return { result: await runCommand(deps.computer, text(a.command), text(a.cwd) || undefined), isError: false };
       case "set_reminder": {
         if (!text(a.text)) return fail('Error: "text" is required.');
         const due = parseDue({ in_minutes: a.in_minutes, at: a.at });

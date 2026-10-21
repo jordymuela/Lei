@@ -9,7 +9,8 @@ import { config } from "../server/config.ts";
 import { Store, addMessage } from "../server/store.ts";
 import type { Correction, Memory, Reminder, Song } from "../server/types.ts";
 import type { Activity } from "../server/computer.ts";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
+import os from "node:os";
 
 type Block = Anthropic.Beta.BetaContentBlock;
 
@@ -80,6 +81,7 @@ function collect() {
       correction: (c: Correction) => corrections.push(c),
       activity: (a: Activity) => activities.push(a),
       reminderSet: (r: Reminder) => reminders.push(r),
+      approve: async () => false,
     },
   };
 }
@@ -217,4 +219,19 @@ test("a paused turn (long web search) is sent back and continued", async () => {
   const result = await runTurn({ client, config, store: await storeWithProfile(), signal: new AbortController().signal, on: collect().on });
   assert.equal(result.text, "Let me check.\n\nIt's sunny.");
   assert.equal(requests[1].messages.at(-1).role, "assistant");
+});
+
+test("an action the person declines is reported back to Claude and not done", async () => {
+  const workspace = await mkdtemp(path.join(tmpdir(), "lei-ws-"));
+  const { client, requests } = fakeClient([
+    { text: ["I'll make that file."], content: [{ type: "text", text: "I'll make that file." }, { type: "tool_use", id: "w1", name: "write_file", input: { path: "plan.txt", content: "hi" } }], stop_reason: "tool_use" },
+    { text: ["Okay, I won't."], content: [{ type: "text", text: "Okay, I won't." }], stop_reason: "end_turn" },
+  ]);
+  const got = collect();
+  const asked: string[] = [];
+  const on = { ...got.on, approve: async (r: { title: string }) => (asked.push(r.title), false) };
+  await runTurn({ client, config: { ...config, workspace }, store: await storeWithProfile(), signal: new AbortController().signal, on });
+  assert.deepEqual(asked, ["Create " + path.join(workspace, "plan.txt").replace(os.homedir(), "~")]);
+  assert.match(requests[1].messages.at(-1).content[0].content, /didn't approve/);
+  await assert.rejects(readFile(path.join(workspace, "plan.txt")));
 });

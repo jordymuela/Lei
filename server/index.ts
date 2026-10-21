@@ -1,9 +1,11 @@
 import Anthropic from "@anthropic-ai/sdk";
+import { randomUUID } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { stat } from "node:fs/promises";
 import { type IncomingMessage, type ServerResponse, createServer } from "node:http";
 import path from "node:path";
 import { SetupError, nameCompanion, runTurn } from "./chat.ts";
+import type { ApprovalRequest } from "./computer.ts";
 import { config, ttsEnabled } from "./config.ts";
 import { welcomeBackNudge } from "./prompt.ts";
 import { ReminderClock } from "./reminders.ts";
@@ -22,6 +24,33 @@ function deliverReminder(r: Reminder): boolean {
   return listeners.size > 0;
 }
 const reminders = new ReminderClock(store, deliverReminder);
+
+/**
+ * Actions waiting for the person's OK, by id. Each resolves once: Allow or
+ * Deny from the page (POST /api/approve), or "no" after two minutes without
+ * an answer or when the turn is interrupted.
+ */
+const APPROVAL_TIMEOUT_MS = 120_000;
+const pendingApprovals = new Map<string, (allow: boolean) => void>();
+
+function requestApproval(request: ApprovalRequest, send: (e: ChatEvent) => void, signal: AbortSignal): Promise<boolean> {
+  if (signal.aborted) return Promise.resolve(false);
+  return new Promise((resolve) => {
+    const id = randomUUID();
+    const finish = (allow: boolean) => {
+      if (!pendingApprovals.delete(id)) return;
+      clearTimeout(timer);
+      signal.removeEventListener("abort", onAbort);
+      send({ type: "approval_result", id, allow });
+      resolve(allow);
+    };
+    const timer = setTimeout(() => finish(false), APPROVAL_TIMEOUT_MS);
+    const onAbort = () => finish(false);
+    signal.addEventListener("abort", onAbort, { once: true });
+    pendingApprovals.set(id, finish);
+    send({ type: "approval", approval: { id, ...request } });
+  });
+}
 
 const MIME: Record<string, string> = {
   ".html": "text/html; charset=utf-8",
@@ -110,7 +139,9 @@ async function chat(req: IncomingMessage, res: ServerResponse): Promise<void> {
   }
 
   res.writeHead(200, { "content-type": "application/x-ndjson; charset=utf-8", "cache-control": "no-store" });
-  const send = (e: ChatEvent) => res.write(JSON.stringify(e) + "\n");
+  const send = (e: ChatEvent) => {
+    if (!res.writableEnded && !res.destroyed) res.write(JSON.stringify(e) + "\n");
+  };
   const abort = new AbortController();
   res.on("close", () => {
     if (!res.writableEnded) abort.abort();
@@ -131,6 +162,7 @@ async function chat(req: IncomingMessage, res: ServerResponse): Promise<void> {
         correction: (correction) => send({ type: "correction", correction }),
         activity: (activity) => send({ type: "activity", activity }),
         reminderSet: (reminder) => send({ type: "reminder_set", reminder }),
+        approve: (request) => requestApproval(request, send, abort.signal),
       },
     });
     let saved = null;
@@ -204,6 +236,14 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 
   if (p === "/api/chat" && m === "POST") return chat(req, res);
 
+  if (p === "/api/approve" && m === "POST") {
+    const body = await readJson(req);
+    const finish = pendingApprovals.get(String(body.id ?? ""));
+    if (!finish) throw new HttpError(404, "Nothing is waiting for approval with that id");
+    finish(body.allow === true);
+    return sendJson(res, 200, { ok: true });
+  }
+
   if (p === "/api/profile" && m === "PATCH") {
     const body = await readJson(req);
     const name = str(body.companionName, 20);
@@ -267,7 +307,9 @@ server.listen(config.port, config.host, () => {
   const voice = ttsEnabled(config) ? "ElevenLabs" : "browser voices";
   console.log(`Lei is listening on http://${config.host}:${config.port}  (model ${config.model}, effort ${config.effort}, ${voice})`);
   if (config.mode === "companion" && config.computer) {
-    console.log(`Can look through (read-only) ${config.workspace}${config.web ? ", and search the web" : ""}. Set LEI_COMPUTER=off to turn this off.`);
+    console.log(
+      `Can look through ${config.workspace}${config.web ? " and search the web" : ""}; commands, file writes and apps wait for your OK. Set LEI_COMPUTER=off to turn this off.`,
+    );
   }
   if (!process.env.ANTHROPIC_API_KEY && !process.env.ANTHROPIC_AUTH_TOKEN) {
     console.log("No ANTHROPIC_API_KEY set; using an `ant auth login` profile if there is one.");

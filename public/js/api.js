@@ -30,6 +30,7 @@ export const api = {
   forget: (id) => call("DELETE", "/api/memories/" + encodeURIComponent(id)),
   clearTranscript: () => call("DELETE", "/api/transcript"),
   reset: () => call("DELETE", "/api/state"),
+  approve: (id, allow) => call("POST", "/api/approve", { id, allow }),
 };
 
 /**

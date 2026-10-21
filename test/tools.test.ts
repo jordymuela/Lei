@@ -9,16 +9,17 @@ test("each mode gets its own tools; custom tools stream their input eagerly", ()
   assert.deepEqual(names(toolsFor("practice", { computer: true, web: true })), ["remember", "correct"]);
   const full = toolsFor("companion", { computer: true, web: true, model: "claude-opus-5-5" });
   assert.deepEqual(names(full), [
-    "remember", "compose", "system_status", "list_directory", "find_files", "read_file", "open", "set_reminder", "cancel_reminder", "web_search", "web_fetch",
+    "remember", "compose", "system_status", "list_directory", "find_files", "read_file", "open", "write_file", "run_command",
+    "set_reminder", "cancel_reminder", "web_search", "web_fetch",
   ]);
   for (const t of full as { type?: string; eager_input_streaming?: boolean }[]) {
     if (!t.type) assert.equal(t.eager_input_streaming, true);
   }
 });
 
-test("there is no tool that runs commands, writes files or launches apps", () => {
-  const all = names(toolsFor("companion", { computer: true, web: true }));
-  for (const n of ["run_command", "write_file", "bash", "launch_app"]) assert.ok(!all.includes(n));
+test("practice mode never gets the computer tools", () => {
+  const all = names(toolsFor("practice", { computer: true, web: true }));
+  for (const n of ["run_command", "write_file", "open", "read_file"]) assert.ok(!all.includes(n));
 });
 
 test("Haiku gets the web tool versions it supports", () => {

@@ -14,6 +14,8 @@
   --press-ink: #A8352A;
   --sheet: #A93629;
   --scrim: rgba(60, 10, 6, .45);
+  --warn: #FFD27A;
+  --code-bg: rgba(60, 10, 6, .28);
   --font-mark: "Jost", "Futura", "Avenir Next", system-ui, sans-serif;
   --font-voice: "Newsreader", "Iowan Old Style", Georgia, serif;
   --font-ui: "Jost", "Avenir Next", "Segoe UI", system-ui, sans-serif;
@@ -26,6 +28,7 @@
     --hair: rgba(247, 228, 221, .17); --veil: rgba(247, 228, 221, .06);
     --figure: #F2765E; --press: #F2765E; --press-ink: #1A0A09;
     --sheet: #221211; --scrim: rgba(0, 0, 0, .6);
+    --warn: #F2B544; --code-bg: rgba(0, 0, 0, .35);
     color-scheme: dark;
   }
 }
@@ -118,6 +121,20 @@ button { cursor: pointer; }
 .song svg { width: 14px; height: 14px; flex: none; }
 .activity { display: block; margin-top: 8px; font-family: var(--font-ui); font-size: 13px; letter-spacing: .02em; color: var(--ink-soft); }
 .activity::before { content: ""; display: inline-block; width: 6px; height: 6px; margin-right: 8px; border-radius: 50%; background: var(--ink); vertical-align: middle; animation: blink 1.3s ease-in-out infinite; }
+.approval {
+  display: flex; flex-direction: column; gap: 10px; margin-top: 14px; padding: 14px 16px; border-radius: 16px;
+  border: 1px solid var(--hair); background: var(--veil); font-family: var(--font-ui); font-size: 15px; line-height: 1.45; white-space: normal;
+}
+.approval.danger { border-color: var(--warn); box-shadow: inset 4px 0 0 var(--warn); }
+.approval p { margin: 0; }
+.approval-title { font-weight: 500; }
+.approval-detail {
+  margin: 0; padding: 10px 12px; border-radius: 10px; background: var(--code-bg); color: var(--ink);
+  font: 13px/1.5 ui-monospace, "SF Mono", Menlo, Consolas, monospace; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 220px; overflow-y: auto;
+}
+.approval-warn { color: var(--ink); font-weight: 500; }
+.approval-note { font-size: 13px; color: var(--ink-soft); }
+.approval-state { font-size: 13px; font-weight: 500; letter-spacing: .12em; text-transform: uppercase; color: var(--ink-soft); }
 .aside { display: block; margin-top: 6px; font-family: var(--font-ui); font-style: normal; font-size: 15px; line-height: 1.45; color: var(--ink-soft); }
 .fix {
   align-self: flex-end; max-width: min(82%, 28rem); margin-top: -10px; padding: 10px 14px; border-radius: 14px;

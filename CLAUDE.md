@@ -40,13 +40,19 @@ Practice mode also sends `ui` (the learner's language, for `i18n.js`) and `speec
 
 **Interface text.** All user-facing strings live in `public/js/i18n.js` (`en`, `pt`, `es`; missing keys fall back to English). Use `t("key", vars)` in `app.js` and `data-i18n` attributes in `index.html`; don't hard-code copy. The Portuguese and Spanish practice strings assume English is the target language.
 
-**Computer abilities are read-only by design.** In companion mode (`config.computer`, `config.web`), `toolsFor()` adds:
-- the computer tools in `server/tools.ts`, run by `runComputerTool()` on top of `server/computer.ts`: `system_status`, `list_directory`, `find_files`, `read_file`, `open` (http(s) URLs and folders only), `set_reminder`, `cancel_reminder`;
+**Computer abilities: looking is free, changing waits for approval.** In companion mode (`config.computer`, `config.web`), `toolsFor()` adds:
+- the computer tools in `server/tools.ts`, run by `runComputerTool()` on top of `server/computer.ts`:
+  - no approval needed: `system_status`, `list_directory`, `find_files`, `read_file`, `set_reminder`, `cancel_reminder`, and `open` for http(s) URLs and folders;
+  - approval needed every time: `write_file`, `run_command`, and `open` for files and apps (opening a file can run it);
 - Anthropic's hosted `web_search`/`web_fetch`. A long search can end a round with `pause_turn`, which `runTurn()` sends back and continues.
 
+**How an approval works.** A tool calls `ctx.approve({ tool, title, detail, danger })`, which is `on.approve` from `runTurn()`. In `server/index.ts`, `requestApproval()` sends an `approval` event, then waits for `POST /api/approve` with the same id. It resolves false after 120 s or when the chat request aborts, and sends `approval_result` either way. The page shows a card (`showApproval()` in `app.js`) and also takes a spoken yes/no in `onUtterance()`. A declined action returns a normal tool result saying so, and the model carries on.
+
 Rules for these tools:
-- Every path goes through `resolveInRoot()`, which confines it to `config.workspace` and refuses secret files (`isSecretPath()`).
-- There is deliberately no tool that runs commands, writes or deletes files, or launches apps. Opening a file could run it, so `open` refuses files too. Adding any of these is a product and security decision for the owner; don't add one as a side change.
+- Every path goes through `resolveInRoot()`, which confines it to `config.workspace` and refuses secret files (`isSecretPath()`), even with approval.
+- Every action that changes something must go through `ctx.approve()` first, with `detail` showing exactly what will run or be written. `danger` (from `isRiskyCommand()`, or replacing an existing file) only changes how the card looks; it never skips the question.
+- `run_command` refuses `sudo` outright. It runs in the user's shell with stdin closed, a 60 s timeout, and `childEnv()`, which strips Lei's API keys and anything named like a key, token, secret or password. Aborting the turn kills the child.
+- There is no approval bypass and no "always allow". Adding one, or a tool that acts outside the workspace, is a product and security decision for the owner; don't add one as a side change.
 - Tools report progress through `on.activity`, which becomes `activity` events that the page shows as a line under the reply.
 
 **Reminders** live in `State.reminders`. `ReminderClock` (`server/reminders.ts`) fires due ones every 10 s. It delivers them to open pages over server-sent events (`GET /api/events`), and keeps undelivered ones until a page connects.

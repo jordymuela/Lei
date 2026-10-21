@@ -12,7 +12,7 @@ import {
   practicePrompt,
 } from "./prompt.ts";
 import os from "node:os";
-import { type Activity, displayPath } from "./computer.ts";
+import { type Activity, type ApprovalRequest, displayPath } from "./computer.ts";
 import { type Store, addCorrection, addMemory } from "./store.ts";
 import { COMPUTER_TOOL_NAMES, runComputerTool, runTool, toolsFor } from "./tools.ts";
 import type { Correction, Memory, Reminder, Song } from "./types.ts";
@@ -51,6 +51,8 @@ export interface TurnHandlers {
   correction(correction: Correction): void;
   activity(activity: Activity): void;
   reminderSet(reminder: Reminder): void;
+  /** Asks the person to approve an action; resolves false if they decline or don't answer. */
+  approve(request: ApprovalRequest): Promise<boolean>;
 }
 
 export interface TurnResult {
@@ -90,7 +92,7 @@ export async function runTurn(opts: {
   ];
   const tools = toolsFor(config.mode, { computer, web, model: config.model });
   const agentDeps = {
-    computer: { root: config.workspace, platform: process.platform },
+    computer: { root: config.workspace, platform: process.platform, approve: on.approve, signal },
     store,
     activity: on.activity,
     reminderSet: on.reminderSet,

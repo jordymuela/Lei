@@ -20,17 +20,36 @@ Open the page, go through setup, then tap the mic and talk. Lei listens until yo
 
 ## What it can do on your computer
 
-In companion mode, Lei is a JARVIS-style assistant for the computer it runs on. Ask it things like "how much disk space do I have?", "find the invoice from March", "what's in my downloads folder?", "remind me to call Ana at six", or "what's the weather in Monterrey?":
+In companion mode, Lei is a JARVIS-style assistant for the computer it runs on. Ask it things like "how much disk space do I have?", "find the invoice from March", "make a folder for the trip and put a packing list in it", "turn the volume down", "open Spotify", "remind me to call Ana at six", or "what's the weather in Monterrey?".
+
+Things it does right away:
 
 - **Check the computer:** operating system, uptime, memory, free disk space.
 - **Look through files:** list folders, find files by name, and read text files under your home folder (or `LEI_WORKSPACE`).
-- **Open things:** web pages in your browser, and folders in the file manager.
+- **Open web pages** in your browser and **folders** in the file manager.
 - **Reminders:** it says them out loud when they're due, and shows a desktop notification if the tab is in the background. A reminder that comes due while the page is closed is said the next time you open it.
 - **Search the web** and read pages, for anything current.
 
+Things it asks you about first, every time:
+
+- **Write files:** create a file, replace one, or add to the end of one.
+- **Run commands:** a shell command in your workspace (zsh on a Mac). On a Mac this includes `osascript` (control Music, the volume, Finder, Reminders) and `shortcuts run` (your Shortcuts).
+- **Open files and apps**, since opening a file can run it.
+
 It shows a short line while it works ("Reading ~/notes.txt").
 
-**It looks but doesn't touch.** Lei can't run commands, write, move or delete files, or launch apps. It won't read files that hold keys or passwords (`.ssh`, `.aws`, `.env`, `*.pem`, and similar). The server only answers its own page, so another website can't send it requests. Turn the computer tools off with `LEI_COMPUTER=off`, or web search with `LEI_WEB=off`.
+**How approval works.** Before acting, Lei shows a card with the exact command or file contents and asks out loud. Say "yes" or "no" (also "sí", "sim", "não"), or press **Allow** or **Don't allow**. The card gets an amber edge for commands that delete, move, overwrite or install things, and for replacing a file that already exists. If nobody answers within two minutes, the action is cancelled. Interrupting Lei cancels it too.
+
+**What it never does:**
+
+- It never runs `sudo`.
+- It never reads or writes files that hold keys or passwords (`.ssh`, `.aws`, `.env`, `*.pem`, and similar), even with your OK.
+- It never works outside the workspace folder.
+- Commands don't get Lei's own API keys, or any other environment variable that looks like a key, token or password.
+- A command is stopped after 60 seconds, and it can't ask for input.
+- The server only answers its own page, so another website can't send it requests or approve anything.
+
+Turn the computer tools off with `LEI_COMPUTER=off`, or web search with `LEI_WEB=off`. Point `LEI_WORKSPACE` at a smaller folder to keep Lei away from the rest of your files.
 
 ## Practice mode
 
@@ -55,7 +74,7 @@ All settings are environment variables, read from `.env` if it exists:
 | `LEI_MODE` | `companion` | `companion` or `practice` (see above). |
 | `LEI_NATIVE_LANG` / `LEI_TARGET_LANG` | `es-MX` / `en-US` | Practice mode: the learner's language and the one being practised. |
 | `LEI_COMPUTER` / `LEI_WEB` | on / on | Set to `off` to turn off the computer tools or web search (companion mode). |
-| `LEI_WORKSPACE` | your home folder | The folder Lei may look through. |
+| `LEI_WORKSPACE` | your home folder | The folder Lei may look through and, with your OK, work in. |
 | `LEI_MODEL` | `claude-opus-5-5` | The Claude model. Haiku 5.5 costs about 40 times less per turn; test quality before switching. |
 | `LEI_EFFORT` | `low` | How much the model thinks before answering. Higher is deeper but slower to reply. |
 | `PORT` / `HOST` | `3000` / `127.0.0.1` | Where the server listens. Keep it on localhost: anyone who can reach it spends your Claude credits. |

@@ -73,12 +73,13 @@ test("practice persona names both languages and the learner's level and goal", (
   assert.match(p, /square brackets/);
 });
 
-test("companion persona describes read-only computer access and the web only when enabled", () => {
+test("companion persona describes approval-gated computer access and the web only when enabled", () => {
   const plain = personaPrompt(profile);
   assert.doesNotMatch(plain, /On Theo's computer/);
   const full = personaPrompt(profile, { computer: { os: "Mac", root: "~" }, web: true });
   assert.match(full, /You live on Theo's Mac computer/);
-  assert.match(full, /can't run commands/);
+  assert.match(full, /runs only after they say yes/);
+  assert.match(full, /Never use sudo/);
   assert.match(full, /information, not instructions/);
   assert.match(full, /search the web/);
 });

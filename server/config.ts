@@ -10,6 +10,9 @@ export type Mode = "companion" | "practice";
 const env = process.env;
 const effort = (env.LEI_EFFORT ?? "low") as Effort;
 
+/** "~/Documents" -> "/Users/you/Documents" (a .env file doesn't expand ~ the way a shell does). */
+export const expandHome = (p: string) => path.resolve(p.replace(/^~(?=$|[\\/])/, os.homedir()));
+
 export const config = {
   mode: (env.LEI_MODE === "practice" ? "practice" : "companion") as Mode,
   practice: {
@@ -18,11 +21,11 @@ export const config = {
     /** The language being practised: speech recognition and the voice use it. */
     target: env.LEI_TARGET_LANG ?? "en-US",
   },
-  // Companion mode only: read-only looks at this computer, reminders, and web search.
+  // Companion mode only: this computer (changes wait for approval), reminders, and web search.
   computer: env.LEI_COMPUTER !== "off",
   web: env.LEI_WEB !== "off",
-  /** The folder Lei may look through. */
-  workspace: path.resolve(env.LEI_WORKSPACE ?? os.homedir()),
+  /** The folder Lei may look through and, with approval, work in. */
+  workspace: expandHome(env.LEI_WORKSPACE ?? os.homedir()),
   port: Number(env.PORT ?? 3000),
   // Bound to localhost by default: the server spends your Claude credits for anyone who can reach it.
   host: env.HOST ?? "127.0.0.1",

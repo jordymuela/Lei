@@ -69,7 +69,8 @@ export type ChatEvent =
   | { type: "song"; song: Song }
   | { type: "correction"; correction: Correction }
   | { type: "activity"; activity: { kind: string; target: string } }
-  | { type: "approval"; approval: { id: string; tool: string; title: string; detail: string } }
+  | { type: "approval"; approval: { id: string; tool: string; title: string; detail: string; danger: boolean } }
+  | { type: "approval_result"; id: string; allow: boolean }
   | { type: "reminder_set"; reminder: Reminder }
   | { type: "done"; message: ChatMessage | null }
   | { type: "error"; code: string; message: string };

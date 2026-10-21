@@ -58,6 +58,11 @@ const listener = new Listener({
     $("heard").textContent = text;
   },
   onUtterance: (text) => {
+    // While an action waits for approval, a spoken "yes" or "no" answers it.
+    if (pendingApproval) {
+      const answer = yesOrNo(text);
+      if (answer !== null) return decide(answer);
+    }
     if (!prefs.autoListen) listener.stop();
     send(text);
   },
@@ -97,6 +102,7 @@ function refresh() {
   let s;
   if (S.stage === "boot") s = t("status.setup");
   else if (S.stage === "waking") s = t("status.waking");
+  else if (pendingApproval) s = t("status.waiting");
   else if (p === "listening") s = t(listener.hearing ? "status.hearing" : "status.listening");
   else if (p === "music") s = music.current ? t("status.playing", { title: music.current.song.title }) : t("status.playingPlain");
   else s = t({ idle: "status.here", thinking: "status.thinking", speaking: "status.speaking" }[p]);
@@ -503,6 +509,64 @@ function notice(text, retry) {
 }
 const clearNotices = () => logEl.querySelectorAll(".notice").forEach((n) => n.remove());
 
+/* ---------- Approvals: actions that wait for the person's OK ---------- */
+
+/** The action waiting for an answer: { id, card }. One at a time; the server asks in order. */
+let pendingApproval = null;
+
+const YES = /^\s*(yes|yeah|yep|yup|sure|ok(ay)?|go ahead|do it|allow|approve|please do|s[ií]|claro|dale|adelante|h[aá]zlo|sim|pode|vai|manda)\b/i;
+const NO = /^\s*(no|nope|nah|don'?t|cancel|stop|deny|n[aã]o|cancela|para|mejor no)\b/i;
+
+/** true for a spoken yes, false for a no, null when the words are neither. */
+function yesOrNo(text) {
+  if (NO.test(text)) return false;
+  if (YES.test(text)) return true;
+  return null;
+}
+
+function showApproval(view, a) {
+  const card = h("div", "approval" + (a.danger ? " danger" : ""));
+  card.setAttribute("role", "group");
+  card.setAttribute("aria-label", a.title);
+  card.append(h("p", "approval-title", a.title), h("pre", "approval-detail", a.detail));
+  if (a.danger) card.append(h("p", "approval-warn", t("approval.danger")));
+  const buttons = h("div", "row-btns");
+  const deny = h("button", "pill ghost", t("approval.deny"));
+  const allow = h("button", "pill", t("approval.allow"));
+  deny.type = allow.type = "button";
+  deny.onclick = () => decide(false);
+  allow.onclick = () => decide(true);
+  buttons.append(deny, allow);
+  card.append(buttons);
+  if (listener.supported) card.append(h("p", "approval-note", t("approval.voice")));
+  view.row.append(card);
+  pendingApproval = { id: a.id, card };
+  if (prefs.voiceOn) speaker.whenDone(() => speaker.say(t("approval.ask")));
+  refresh();
+}
+
+/** Replaces the card's buttons with how it ended. */
+function settleApproval(id, state) {
+  const card = pendingApproval?.id === id ? pendingApproval.card : null;
+  if (pendingApproval?.id === id) pendingApproval = null;
+  if (card && !card.querySelector(".approval-state")) {
+    card.querySelectorAll(".row-btns, .approval-note").forEach((el) => el.remove());
+    card.append(h("p", "approval-state", t("approval." + state)));
+  }
+  refresh();
+}
+
+async function decide(allow) {
+  if (!pendingApproval) return;
+  const { id } = pendingApproval;
+  settleApproval(id, allow ? "allowed" : "declined");
+  try {
+    await api.approve(id, allow);
+  } catch (err) {
+    toast(explain(err.code, err.message));
+  }
+}
+
 /** One quiet line under the reply saying what Lei is doing ("Reading ~/notes.txt"). */
 function showActivity(view, activity) {
   let line = view.row.querySelector(".activity");
@@ -518,6 +582,7 @@ function finalizeLive(live, keep) {
   if (live.done) return;
   live.done = true;
   live.view.row.querySelector(".activity")?.remove();
+  if (pendingApproval && live.view.row.contains(pendingApproval.card)) settleApproval(pendingApproval.id, "expired");
   if (S.live === live) S.live = null;
   const m = live.msg;
   m.text = m.text.trim();
@@ -569,6 +634,11 @@ async function respond(body, quiet = false) {
         } else if (e.type === "activity") {
           showActivity(view, e.activity);
           scrollEnd();
+        } else if (e.type === "approval") {
+          showApproval(view, e.approval);
+          scrollEnd(true);
+        } else if (e.type === "approval_result") {
+          settleApproval(e.id, e.allow ? "allowed" : "expired");
         } else if (e.type === "reminder_set") {
           const time = new Date(e.reminder.due).toLocaleString(t.lang, { weekday: "short", hour: "numeric", minute: "2-digit" });
           toast(t("reminder.set", { time, text: e.reminder.text }));
