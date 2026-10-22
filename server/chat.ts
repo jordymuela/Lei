@@ -92,7 +92,7 @@ export async function runTurn(opts: {
   ];
   const tools = toolsFor(config.mode, { computer, web, model: config.model });
   const agentDeps = {
-    computer: { root: config.workspace, platform: process.platform, approve: on.approve, signal },
+    computer: { root: config.workspace, platform: process.platform, approve: on.approve, signal, untrusted: false },
     store,
     activity: on.activity,
     reminderSet: on.reminderSet,
@@ -122,6 +122,8 @@ export async function runTurn(opts: {
     });
     stream.on("contentBlock", (block) => {
       if (block.type !== "server_tool_use") return;
+      // Web pages and search results can carry instructions; links now need approval.
+      agentDeps.computer.untrusted = true;
       const input = (block.input ?? {}) as { query?: unknown; url?: unknown };
       if (block.name === "web_search") on.activity({ kind: "search", target: String(input.query ?? "") });
       if (block.name === "web_fetch") on.activity({ kind: "fetch", target: String(input.url ?? "") });

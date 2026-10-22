@@ -226,13 +226,16 @@ export async function runComputerTool(name: string, input: unknown, deps: AgentD
         deps.activity({ kind: "status", target: "" });
         return { result: await systemStatus(root), isError: false };
       case "list_directory":
+        deps.computer.untrusted = true;
         deps.activity({ kind: "list", target: text(a.path) || "~" });
         return { result: await listDirectory(root, text(a.path)), isError: false };
       case "find_files":
+        deps.computer.untrusted = true;
         deps.activity({ kind: "find", target: text(a.query) });
         return { result: await findFiles(root, text(a.query), text(a.path) || "."), isError: false };
       case "read_file":
         if (!text(a.path)) return fail('Error: "path" is required.');
+        deps.computer.untrusted = true;
         deps.activity({ kind: "read", target: text(a.path) });
         return { result: await readTextFile(root, text(a.path), Number(a.max_chars) || undefined), isError: false };
       case "open":
@@ -245,7 +248,11 @@ export async function runComputerTool(name: string, input: unknown, deps: AgentD
       case "run_command":
         if (!text(a.command)) return fail('Error: "command" is required.');
         deps.activity({ kind: "run", target: text(a.command) });
-        return { result: await runCommand(deps.computer, text(a.command), text(a.cwd) || undefined), isError: false };
+        try {
+          return { result: await runCommand(deps.computer, text(a.command), text(a.cwd) || undefined), isError: false };
+        } finally {
+          deps.computer.untrusted = true;
+        }
       case "set_reminder": {
         if (!text(a.text)) return fail('Error: "text" is required.');
         const due = parseDue({ in_minutes: a.in_minutes, at: a.at });

