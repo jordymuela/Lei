@@ -35,6 +35,8 @@ const S = {
   memories: [],
   transcript: [],
   corrections: [],
+  /** Name of the server's voice engine (e.g. "Kokoro"), or "". */
+  voiceEngine: "",
   /** The reply being streamed: { ctl, msg, view, gotText, done, song } */
   live: null,
 };
@@ -284,11 +286,16 @@ function renderStep(i) {
   validate();
 }
 
-/** The voice choices: the server's natural voice (if configured), the best browser voices, and text only. */
+/** The voice choices: the server's natural voices (if it has any), the best browser voices, and text only. */
 function voiceChoices(limit) {
   const list = [];
-  if (speaker.serverAvailable) list.push({ id: SERVER_VOICE, label: t("voice.natural"), sub: "ElevenLabs" });
-  for (const v of speaker.ranked().slice(0, limit)) {
+  if (speaker.serverAvailable) {
+    for (const v of speaker.serverChoices()) {
+      const label = speaker.serverVoices.length === 1 ? t("voice.natural") : v.label;
+      list.push({ id: SERVER_VOICE + ":" + v.id, label, sub: [S.voiceEngine, v.lang, t("voice.natural").toLowerCase()].filter(Boolean).join(" · ") });
+    }
+  }
+  for (const v of speaker.ranked().slice(0, Math.max(0, limit - list.length))) {
     list.push({ id: v.name, label: prettyVoice(v.name), sub: v.lang + (/premium|enhanced|natural|neural/i.test(v.name) ? " · " + t("voice.highQuality") : "") });
   }
   return list;
@@ -369,6 +376,8 @@ function loadState(state) {
   S.corrections = state.corrections || [];
   S.mode = state.mode === "practice" ? "practice" : "companion";
   speaker.serverAvailable = state.voice === "server";
+  speaker.serverVoices = state.voices || [];
+  S.voiceEngine = state.voiceEngine || "";
   speaker.lang = state.speechLang || "";
   listener.lang = state.speechLang || "";
   t = makeT(state.ui);

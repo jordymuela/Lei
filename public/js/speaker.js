@@ -1,11 +1,13 @@
 // The companion's voice. Replies are spoken sentence by sentence while they
-// stream in, either with the browser's own speech synthesis or, when the
-// server has an ElevenLabs key, with audio fetched from POST /api/tts.
+// stream in, either with the browser's own speech synthesis or with audio
+// from the server's voice (POST /api/tts: Kokoro, ElevenLabs or a local
+// speech server). If a server clip fails, that sentence falls back to the browser voice.
 
 import { SentenceFeed, speakable } from "./lib/sentences.js";
 
-/** The voice id that means "use the server's natural voice". */
+/** Voice ids for the server's voices: "server" (its default) or "server:<id>". */
 export const SERVER_VOICE = "server";
+const serverVoiceId = (voice) => (voice.startsWith(SERVER_VOICE + ":") ? voice.slice(SERVER_VOICE.length + 1) : "");
 
 const PREFERRED = ["samantha", "ava", "allison", "susan", "zoe", "serena", "karen", "moira", "tessa", "kate", "aria", "jenny", "sonia", "libby", "emma", "natasha", "google uk english female", "google us english", "zira", "paulina", "monica", "luciana", "amélie", "anna"];
 const NOVELTY = /novelty|whisper|bells|bad news|good news|boing|bubbles|cellos|zarvox|trinoids|organ|hysterical|jester|superstar|albert|fred|junior|ralph|bahh|wobble|grandpa|grandma|rocko|shelley|flo|eddy|reed|sandy/;
@@ -24,10 +26,12 @@ export class Speaker {
     this.hooks = hooks;
     this.synth = "speechSynthesis" in window ? window.speechSynthesis : null;
     this.serverAvailable = false;
+    /** The server's voices: { id, label, lang } ("" lang = any language). */
+    this.serverVoices = [];
     /** Language the voice speaks; empty = the browser's language. */
     this.lang = "";
     this.enabled = true;
-    /** A browser voice name, SERVER_VOICE, or "" for the best available. */
+    /** A browser voice name, a server voice ("server" or "server:<id>"), or "" for the best available. */
     this.voice = "";
     this.rate = 1;
     this.voices = [];
@@ -60,8 +64,17 @@ export class Speaker {
     return this.pending > 0;
   }
 
+  /** True when replies use the server's voice: one was picked, or none was and it has one for this language. */
   get usingServer() {
-    return this.serverAvailable && (this.voice === SERVER_VOICE || (!this.voice && !this.synth));
+    if (!this.serverAvailable) return false;
+    if (this.voice.startsWith(SERVER_VOICE + ":")) return true;
+    return (this.voice === SERVER_VOICE || !this.voice) && (this.serverChoices().length > 0 || !this.synth);
+  }
+
+  /** The server's voices that speak the speaking language. */
+  serverChoices() {
+    const lang = (this.lang || navigator.language || "en").slice(0, 2).toLowerCase();
+    return this.serverVoices.filter((v) => !v.lang || v.lang.slice(0, 2).toLowerCase() === lang);
   }
 
   /** Browser voices for the speaking language, best-sounding first. */
@@ -118,8 +131,8 @@ export class Speaker {
   say(chunk, voice) {
     const text = speakable(chunk);
     if (!text) return;
-    const server = voice ? voice === SERVER_VOICE && this.serverAvailable : this.usingServer;
-    if (server) this.#sayServer(text);
+    const server = voice ? voice.startsWith(SERVER_VOICE) && this.serverAvailable : this.usingServer;
+    if (server) this.#sayServer(text, voice || this.voice);
     else this.#sayBrowser(text, voice);
   }
 
@@ -127,7 +140,8 @@ export class Speaker {
     this.stop();
     this.unlock();
     const v = this.voices.find((x) => x.name === voice);
-    this.say(previewLine(v?.lang || this.lang || navigator.language), voice || this.voice || SERVER_VOICE);
+    const sv = this.serverVoices.find((x) => x.id === serverVoiceId(voice || ""));
+    this.say(previewLine(v?.lang || sv?.lang || this.lang || navigator.language), voice || this.voice || SERVER_VOICE);
   }
 
   whenDone(fn) {
@@ -148,8 +162,7 @@ export class Speaker {
     this.hooks.onChange();
   }
 
-  #sayBrowser(text, voiceName) {
-    if (!this.synth) return;
+  #utterance(text, voiceName) {
     const u = new SpeechSynthesisUtterance(text);
     const v = voiceName ? this.voices.find((x) => x.name === voiceName) : this.browserVoice();
     if (v) {
@@ -157,6 +170,12 @@ export class Speaker {
       u.lang = v.lang;
     }
     u.rate = this.rate;
+    return u;
+  }
+
+  #sayBrowser(text, voiceName) {
+    if (!this.synth) return;
+    const u = this.#utterance(text, voiceName);
     const gen = this.gen;
     u.onstart = () => {
       if (gen !== this.gen) return;
@@ -171,15 +190,15 @@ export class Speaker {
     this.hooks.onChange();
   }
 
-  #sayServer(text) {
+  #sayServer(text, voice) {
     const blob = fetch("/api/tts", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ text }),
+      body: JSON.stringify({ text, voice: serverVoiceId(voice) || this.serverChoices()[0]?.id }),
     })
       .then((r) => (r.ok ? r.blob() : null))
       .catch(() => null);
-    this.queue.push(blob);
+    this.queue.push({ blob, text });
     this.pending++;
     this.lastActive = performance.now();
     this.hooks.onChange();
@@ -191,9 +210,10 @@ export class Speaker {
     if (this.playing || !this.queue.length) return;
     this.playing = true;
     const gen = this.gen;
-    this.queue.shift().then((blob) => {
+    const { blob: next, text } = this.queue.shift();
+    next.then((blob) => {
       if (gen !== this.gen) return;
-      if (!blob) return this.#finished();
+      if (!blob) return this.#fallback(text, gen);
       const url = URL.createObjectURL(blob);
       const end = () => {
         URL.revokeObjectURL(url);
@@ -211,6 +231,19 @@ export class Speaker {
         })
         .catch(end);
     });
+  }
+
+  // The server couldn't voice this sentence: say it with the browser voice rather than skip it.
+  #fallback(text, gen) {
+    if (!this.synth) return this.#finished();
+    const u = this.#utterance(text);
+    u.onstart = () => {
+      this.lastActive = performance.now();
+      this.hooks.onWord(0.5);
+    };
+    u.onend = u.onerror = () => gen === this.gen && this.#finished();
+    this.lastActive = performance.now();
+    this.synth.speak(u);
   }
 
   #finished() {

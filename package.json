@@ -10,6 +10,7 @@
   "scripts": {
     "start": "node --env-file-if-exists=.env server/index.ts",
     "dev": "node --env-file-if-exists=.env --watch server/index.ts",
+    "get-voice": "node scripts/get-voice.ts",
     "test": "node --test \"test/**/*.test.ts\"",
     "typecheck": "tsc --noEmit",
     "check": "npm run typecheck && npm test"
@@ -20,5 +21,9 @@
   "devDependencies": {
     "@types/node": "^22.20.5",
     "typescript": "^7.0.2"
+  },
+  "optionalDependencies": {
+    "onnxruntime-node": "1.30.0",
+    "phonemizer": "1.2.1"
   }
 }

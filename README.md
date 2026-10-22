@@ -18,6 +18,25 @@ npm start               # http://127.0.0.1:3000
 
 Open the page, go through setup, then tap the mic and talk. Lei listens until you pause, answers, and starts listening again once it has finished speaking. To cut it off, tap the figure or press Esc.
 
+## A human-sounding voice
+
+Out of the box Lei speaks with your browser's built-in voices. For a voice that sounds like a person, download Kokoro, an open-source voice model:
+
+```bash
+npm run get-voice       # about 350 MB, once; checked against pinned SHA-256 hashes
+npm start
+```
+
+Then pick a voice under **Settings** (Heart is the default; Bella, Emma, Nicole and Michael are also good). Kokoro runs inside Lei's server on your computer's CPU: no GPU, no Python, no account, and what Lei says never leaves the computer. On an Apple Silicon Mac a sentence takes a fraction of a second.
+
+- **Spanish and Portuguese voices** need one more program: `brew install espeak-ng` on a Mac. Without it, only the English voices are offered.
+- **Other voices:**
+  - Any local speech server with OpenAI's `/v1/audio/speech` endpoint works: Kokoro-FastAPI, Chatterbox-TTS-Server, Orpheus-FastAPI or LocalAI. Set `LEI_TTS_URL` (and `LEI_TTS_VOICE`).
+  - ElevenLabs works with `ELEVENLABS_API_KEY` and `ELEVENLABS_VOICE_ID`.
+- If the server voice fails for a sentence, the browser voice says it instead.
+
+Kokoro's model is Apache-2.0 (by hexgrad); the files come from the kokoro-onnx project's release. The English phonemizer bundles eSpeak NG, which is GPL-3.0. That's fine for personal use; check it before you ship Lei to customers.
+
 ## What it can do on your computer
 
 In companion mode, Lei is a JARVIS-style assistant for the computer it runs on. Ask it things like "how much disk space do I have?", "find the invoice from March", "make a folder for the trip and put a packing list in it", "turn the volume down", "open Spotify", "remind me to call Ana at six", or "what's the weather in Monterrey?".
@@ -35,6 +54,7 @@ Things it asks you about first, every time:
 - **Write files:** create a file, replace one, or add to the end of one.
 - **Run commands:** a shell command in your workspace (zsh on a Mac). On a Mac this includes `osascript` (control Music, the volume, Finder, Reminders) and `shortcuts run` (your Shortcuts).
 - **Open files and apps**, since opening a file can run it.
+- **Open web links after reading something from outside**, such as a web page, a search result, a file or a command's output. A page could tell her to put your data in a link, so once she has read one, links wait for your OK for the rest of that reply.
 
 It shows a short line while it works ("Reading ~/notes.txt").
 
@@ -79,7 +99,10 @@ All settings are environment variables, read from `.env` if it exists:
 | `LEI_EFFORT` | `low` | How much the model thinks before answering. Higher is deeper but slower to reply. |
 | `PORT` / `HOST` | `3000` / `127.0.0.1` | Where the server listens. Keep it on localhost: anyone who can reach it spends your Claude credits. |
 | `LEI_DATA_FILE` | `data/state.json` | Where the name, memories and conversation are saved. |
-| `ELEVENLABS_API_KEY`, `ELEVENLABS_VOICE_ID` | none | Optional. With both set, replies use an ElevenLabs voice instead of the browser's built-in voices. |
+| `LEI_VOICE` | `auto` | Which voice speaks: `kokoro`, `elevenlabs`, `openai` (a local speech server) or `browser`. `auto` takes the first one that's set up, in that order: ElevenLabs, local server, Kokoro, browser. |
+| `LEI_VOICE_DIR` | `data/voices` | Where `npm run get-voice` puts Kokoro. |
+| `LEI_TTS_URL`, `LEI_TTS_VOICE` | none | A local speech server with OpenAI's API (e.g. `http://127.0.0.1:8880/v1`) and its voice names, comma-separated. `LEI_TTS_MODEL` (default `tts-1`) and `LEI_TTS_KEY` if it needs them. |
+| `ELEVENLABS_API_KEY`, `ELEVENLABS_VOICE_ID` | none | Optional. With both set, replies use an ElevenLabs voice. |
 | `ELEVENLABS_MODEL` | `eleven_flash_v2_5` | The ElevenLabs model. |
 
 ## Privacy
@@ -87,7 +110,11 @@ All settings are environment variables, read from `.env` if it exists:
 - Your conversation, Lei's notes about you, and its name are stored in one JSON file on this computer (`data/state.json`). **Settings → Start over** deletes it. You can read or remove any single memory under **Memories**.
 - What you say is sent to Claude to generate the reply, and so are the contents of any file Lei reads and its web searches.
 - Speech recognition is done by your browser. Chrome sends the audio to Google's speech service; Safari uses Apple's.
-- With ElevenLabs configured, the replies' text is sent to ElevenLabs to be spoken.
+- Kokoro speaks on this computer, so the replies' text stays here. With ElevenLabs configured, the replies' text is sent to ElevenLabs to be spoken.
+
+## Roadmap
+
+[docs/roadmap.md](docs/roadmap.md) covers what similar projects do well, the voice options, running Lei on your phone and other computers, and the risks and security requirements to meet first.
 
 ## Development
 

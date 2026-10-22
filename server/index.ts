@@ -4,18 +4,20 @@ import { createReadStream } from "node:fs";
 import { stat } from "node:fs/promises";
 import { type IncomingMessage, type ServerResponse, createServer } from "node:http";
 import path from "node:path";
+import { Readable } from "node:stream";
 import { SetupError, nameCompanion, runTurn } from "./chat.ts";
 import type { ApprovalRequest } from "./computer.ts";
-import { config, ttsEnabled } from "./config.ts";
+import { config } from "./config.ts";
 import { welcomeBackNudge } from "./prompt.ts";
 import { ReminderClock } from "./reminders.ts";
 import { refuseReason } from "./security.ts";
 import { LIMITS, Store, addMessage } from "./store.ts";
-import { speak } from "./tts.ts";
+import { createVoice, kokoroInstalled } from "./tts.ts";
 import type { ChatEvent, Reminder, State } from "./types.ts";
 
 const client = new Anthropic();
 const store = new Store(config.dataFile);
+const voice = await createVoice(config);
 
 /** Open pages listening on GET /api/events (server-sent events), for reminders. */
 const listeners = new Set<ServerResponse>();
@@ -97,7 +99,9 @@ const publicState = (s: State) => ({
   memories: s.memories,
   transcript: s.transcript,
   corrections: s.corrections,
-  voice: ttsEnabled(config) ? "server" : "browser",
+  voice: voice ? "server" : "browser",
+  voiceEngine: voice?.name ?? null,
+  voices: voice?.voices ?? [],
   mode: config.mode,
   // In practice mode the page speaks the learner's language and listens for the target one.
   ui: config.mode === "practice" ? config.practice.native : null,
@@ -270,12 +274,26 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
   }
 
   if (p === "/api/tts" && m === "POST") {
-    if (!ttsEnabled(config)) throw new HttpError(404, "Server voice isn't configured");
-    const text = str((await readJson(req)).text, 1000);
+    if (!voice) throw new HttpError(404, "Server voice isn't configured");
+    const body = await readJson(req);
+    const text = str(body.text, 1000);
     if (!text) throw new HttpError(400, "Nothing to say");
+    const asked = str(body.voice, 80);
+    const id = voice.voices.some((v) => v.id === asked) ? asked : voice.voices[0].id;
     const abort = new AbortController();
     res.on("close", () => abort.abort());
-    return speak(config, text, res, abort.signal);
+    let audio: Response;
+    try {
+      audio = await voice.speak(text, id, abort.signal);
+    } catch (err) {
+      if (abort.signal.aborted) return;
+      console.error(`[voice] ${err instanceof Error ? err.message : err}`);
+      throw new HttpError(502, "The voice couldn't say that");
+    }
+    res.writeHead(200, { "content-type": audio.headers.get("content-type") ?? "audio/mpeg", "cache-control": "no-store" });
+    if (!audio.body) return void res.end();
+    Readable.fromWeb(audio.body as import("node:stream/web").ReadableStream).pipe(res);
+    return;
   }
 
   if (p.startsWith("/api/")) throw new HttpError(404, "Not found");
@@ -304,8 +322,11 @@ const server = createServer((req, res) => {
 
 server.listen(config.port, config.host, () => {
   reminders.start();
-  const voice = ttsEnabled(config) ? "ElevenLabs" : "browser voices";
-  console.log(`Lei is listening on http://${config.host}:${config.port}  (model ${config.model}, effort ${config.effort}, ${voice})`);
+  const voiceName = voice ? `voice: ${voice.name}` : "browser voices";
+  console.log(`Lei is listening on http://${config.host}:${config.port}  (model ${config.model}, effort ${config.effort}, ${voiceName})`);
+  if (!voice && config.voice.engine === "auto" && !kokoroInstalled(config)) {
+    console.log("For a natural open-source voice that runs on this computer, run: npm run get-voice");
+  }
   if (config.mode === "companion" && config.computer) {
     console.log(
       `Can look through ${config.workspace}${config.web ? " and search the web" : ""}; commands, file writes and apps wait for your OK. Set LEI_COMPUTER=off to turn this off.`,

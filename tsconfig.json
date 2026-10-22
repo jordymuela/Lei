@@ -14,5 +14,5 @@
     "erasableSyntaxOnly": true,
     "skipLibCheck": true
   },
-  "include": ["server", "test", "public/js/lib"]
+  "include": ["server", "scripts", "test", "public/js/lib"]
 }

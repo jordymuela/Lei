@@ -44,6 +44,7 @@ Practice mode also sends `ui` (the learner's language, for `i18n.js`) and `speec
 - the computer tools in `server/tools.ts`, run by `runComputerTool()` on top of `server/computer.ts`:
   - no approval needed: `system_status`, `list_directory`, `find_files`, `read_file`, `set_reminder`, `cancel_reminder`, and `open` for http(s) URLs and folders;
   - approval needed every time: `write_file`, `run_command`, and `open` for files and apps (opening a file can run it);
+  - approval needed once outside text has entered the turn: `open` for web links. `ComputerContext.untrusted` is set by file tools, commands and the hosted web tools, because that text could ask her to send data out in a URL;
 - Anthropic's hosted `web_search`/`web_fetch`. A long search can end a round with `pause_turn`, which `runTurn()` sends back and continues.
 
 **How an approval works.** A tool calls `ctx.approve({ tool, title, detail, danger })`, which is `on.approve` from `runTurn()`. In `server/index.ts`, `requestApproval()` sends an `approval` event, then waits for `POST /api/approve` with the same id. It resolves false after 120 s or when the chat request aborts, and sends `approval_result` either way. The page shows a card (`showApproval()` in `app.js`) and also takes a spoken yes/no in `onUtterance()`. A declined action returns a normal tool result saying so, and the model carries on.
@@ -54,6 +55,15 @@ Rules for these tools:
 - `run_command` refuses `sudo` outright. It runs in the user's shell with stdin closed, a 60 s timeout, and `childEnv()`, which strips Lei's API keys and anything named like a key, token, secret or password. Aborting the turn kills the child.
 - There is no approval bypass and no "always allow". Adding one, or a tool that acts outside the workspace, is a product and security decision for the owner; don't add one as a side change.
 - Tools report progress through `on.activity`, which becomes `activity` events that the page shows as a line under the reply.
+
+**Voice out.** `createVoice()` (`server/tts.ts`) picks one engine at startup (`LEI_VOICE`, or the first that's set up: ElevenLabs, a local OpenAI-style speech server, Kokoro). `POST /api/tts` turns one sentence into audio; `/api/state` lists the engine's voices, and the page offers them as `server:<id>` next to the browser voices. If a clip fails, `Speaker` says that sentence with the browser voice.
+
+**Kokoro** (`server/kokoro.ts`) is the open-source voice. It runs in-process through `onnxruntime-node`, with model files downloaded by `npm run get-voice` (`scripts/get-voice.ts`) and checked against the SHA-256 hashes in `KOKORO_FILES`.
+- **Phonemes:** English goes through the `phonemizer` package, with kokoro-js's normalisation and fixes. Spanish and Portuguese go through the `espeak-ng` program with misaki's symbol mapping; those voices are offered only when it's installed.
+- **Queue:** requests run one at a time, so the first sentence isn't slowed by prefetches.
+- **Silence:** clips are trimmed so sentences don't drag.
+- **Packages:** `onnxruntime-node` and `phonemizer` are optional dependencies, imported only when Kokoro loads. `phonemizer`'s Emscripten glue adds process-wide crash handlers, and `loadEnglishPhonemizer()` removes them; keep that.
+- **Tests:** the voice test that runs the real model is skipped unless the files are in `LEI_VOICE_DIR`.
 
 **Reminders** live in `State.reminders`. `ReminderClock` (`server/reminders.ts`) fires due ones every 10 s. It delivers them to open pages over server-sent events (`GET /api/events`), and keeps undelivered ones until a page connects.
 

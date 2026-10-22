@@ -34,6 +34,18 @@ export const config = {
   effort: EFFORTS.includes(effort) ? effort : "low",
   dataFile: path.resolve(env.LEI_DATA_FILE ?? "data/state.json"),
   publicDir: path.resolve(import.meta.dirname, "../public"),
+  voice: {
+    /** auto (the first one that's set up), kokoro, elevenlabs, openai, or browser. */
+    engine: env.LEI_VOICE ?? "auto",
+    /** Where `npm run get-voice` puts the Kokoro model. */
+    dir: expandHome(env.LEI_VOICE_DIR ?? "data/voices"),
+    /** Any local server with an OpenAI-style POST /v1/audio/speech, e.g. "http://127.0.0.1:8880/v1". */
+    url: env.LEI_TTS_URL ?? "",
+    /** Comma-separated voice names that server knows. */
+    voices: env.LEI_TTS_VOICE ?? "",
+    model: env.LEI_TTS_MODEL ?? "tts-1",
+    apiKey: env.LEI_TTS_KEY ?? "",
+  },
   elevenlabs: {
     apiKey: env.ELEVENLABS_API_KEY ?? "",
     voiceId: env.ELEVENLABS_VOICE_ID ?? "",
@@ -42,8 +54,6 @@ export const config = {
 };
 
 export type Config = typeof config;
-
-export const ttsEnabled = (c: Config) => !!(c.elevenlabs.apiKey && c.elevenlabs.voiceId);
 
 /** Server-side refusal fallback is a Claude API feature that Haiku models don't support. */
 export const useFallbacks = (model: string) => !/haiku/.test(model);
