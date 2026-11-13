@@ -389,6 +389,7 @@ server.on("upgrade", (req, socket, head) => {
     const session = new ListenSession({
       vad: hearing.createVad(),
       transcribe: hearing.transcribe,
+      finished: hearing.finished,
       pauses,
       send: (e) => {
         if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(e));
@@ -417,7 +418,7 @@ server.on("upgrade", (req, socket, head) => {
 
 server.listen(config.port, config.host, () => {
   reminders.start();
-  const voiceName = `${voice ? `voice: ${voice.name}` : "browser voices"}, ${hearing ? "hearing: on this computer" : "hearing: browser"}`;
+  const voiceName = `${voice ? `voice: ${voice.name}` : "browser voices"}, ${hearing ? `hearing: on this computer${hearing.finished ? " with Smart Turn" : ""}` : "hearing: browser"}`;
   console.log(`Lei is listening on http://${config.host}:${config.port}  (model ${config.model}, effort ${config.effort}, ${voiceName})`);
   const missing = (!voice && config.voice.engine === "auto" && !kokoroInstalled(config)) || (!hearing && config.hearing.engine === "auto" && !hearingInstalled(config.voice.dir));
   if (missing) console.log("For an open-source voice and speech recognition that run on this computer, run: npm run get-voice");

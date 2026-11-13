@@ -45,6 +45,7 @@ const ECHO_TAIL = Math.round(0.5 * RATE);
 export class ListenSession {
   #vad: Vad;
   #transcribe: (samples: Float32Array) => Promise<string>;
+  #finished?: (samples: Float32Array) => Promise<number>;
   #send: (e: HearingEvent) => void;
   #pauses: PauseStats;
 
@@ -60,6 +61,8 @@ export class ListenSession {
   /** Audio up to this sample is covered by #text. */
   #textEnd = 0;
   #decodeMs = 0;
+  /** Smart Turn's verdict for the current pause (null until it answers, or without the model). */
+  #turnProb: number | null = null;
   #decoding = false;
   #again = false;
   /** Bumped whenever an utterance ends, so late transcripts of it are ignored. */
@@ -78,9 +81,17 @@ export class ListenSession {
   #herStoppedAt = -Infinity;
   #herSentences: { at: number; text: string }[] = [];
 
-  constructor(opts: { vad: Vad; transcribe: (samples: Float32Array) => Promise<string>; send: (e: HearingEvent) => void; pauses: PauseStats }) {
+  constructor(opts: {
+    vad: Vad;
+    transcribe: (samples: Float32Array) => Promise<string>;
+    /** Smart Turn, if installed. */
+    finished?: (samples: Float32Array) => Promise<number>;
+    send: (e: HearingEvent) => void;
+    pauses: PauseStats;
+  }) {
     this.#vad = opts.vad;
     this.#transcribe = opts.transcribe;
+    this.#finished = opts.finished;
     this.#send = opts.send;
     this.#pauses = opts.pauses;
   }
@@ -133,6 +144,7 @@ export class ListenSession {
     } else if (this.#pauseAt !== null) {
       this.#pauses.add(((this.#now - this.#pauseAt) / RATE) * 1000);
       this.#pauseAt = null;
+      this.#turnProb = null;
       this.#send({ type: "speech", on: true });
     }
     if (this.#now - this.#start >= MAX_UTTERANCE) {
@@ -146,6 +158,7 @@ export class ListenSession {
       this.#pauseAt = Math.max(this.#start!, this.#now - VAD_LAG);
       this.#send({ type: "speech", on: false });
       this.#decode();
+      this.#judgeTurn();
     }
     this.#maybeFinish();
   }
@@ -190,6 +203,21 @@ export class ListenSession {
       });
   }
 
+  /** Asks Smart Turn whether this pause sounds like the end of the turn. */
+  #judgeTurn(): void {
+    if (!this.#finished || this.#start === null || this.#pauseAt === null) return;
+    const gen = this.#gen;
+    const pauseAt = this.#pauseAt;
+    this.#finished(this.#slice(this.#start, pauseAt))
+      .catch(() => null)
+      .then((prob) => {
+        if (gen !== this.#gen || this.#pauseAt !== pauseAt) return;
+        // Without an answer, fall back to the words alone.
+        this.#turnProb = prob ?? -1;
+        this.#maybeFinish();
+      });
+  }
+
   /** While she's speaking: drop her own echo, stop her if they want the floor. True if the utterance was dropped. */
   #judgeOverlap(): boolean {
     const recent = this.#herRecentWords();
@@ -211,8 +239,10 @@ export class ListenSession {
 
   #maybeFinish(): void {
     if (this.#pauseAt === null || this.#decoding || this.#textEnd < this.#pauseAt) return;
+    if (this.#finished && this.#turnProb === null) return;
     const silentMs = ((this.#now - this.#pauseAt) / RATE) * 1000;
-    if (silentMs < endOfTurnWait(this.#text, this.#pauses.typical())) return;
+    const prob = this.#turnProb === null || this.#turnProb < 0 ? null : this.#turnProb;
+    if (silentMs < endOfTurnWait(this.#text, this.#pauses.typical(), prob)) return;
     const text = this.#text.trim();
     const overHer = this.#herSpeaking && !this.#barged;
     if (!text || (overHer && isBackchannel(text))) return this.#drop();
@@ -234,6 +264,7 @@ export class ListenSession {
     this.#pauseAt = null;
     this.#text = "";
     this.#textEnd = 0;
+    this.#turnProb = null;
     this.#again = false;
     this.#ducked = false;
     this.#barged = false;

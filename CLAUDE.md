@@ -77,12 +77,16 @@ Rules for these tools:
 - **Packages:** `onnxruntime-node` and `phonemizer` are optional dependencies, imported only when Kokoro loads. `phonemizer`'s Emscripten glue adds process-wide crash handlers, and `loadEnglishPhonemizer()` removes them; keep that.
 - **Tests:** the voice test that runs the real model is skipped unless the files are in `LEI_VOICE_DIR`.
 
-**Local hearing** (`server/hearing.ts`, `server/listening.ts`). Silero VAD and Parakeet TDT 0.6B v3 run in-process through `sherpa-onnx-node`, an optional dependency loaded with `createRequire`. `createHearing()` returns null when the models aren't downloaded or `LEI_HEARING=browser`, and the page then uses `Listener`.
+**Local hearing** (`server/hearing.ts`, `server/listening.ts`). Silero VAD and Parakeet TDT 0.6B v3 run in-process through `sherpa-onnx-node`, an optional dependency loaded with `createRequire`. Smart Turn v3.2 (`server/smartturn.ts`) runs through `onnxruntime-node`:
+- `whisperFeatures()` reproduces Pipecat's Whisper log-mel features; its own mixed-radix `Fft` handles the 400 points.
+- Its probability feeds `endOfTurnWait()`.
+- It's optional: off with `LEI_SMART_TURN=off`, or when the file is missing. `createHearing()` returns null when the models aren't downloaded or `LEI_HEARING=browser`, and the page then uses `Listener`.
 - **Transport:** the page's AudioWorklet (`public/js/mic-worklet.js`) sends 16 kHz 16-bit frames over a WebSocket at `/api/listen`. Each connection gets one `ListenSession`.
 - **Clock:** `ListenSession` counts time in samples, not wall-clock, so tests can feed audio deterministically.
 - **Turn-taking:**
   - It decodes the utterance every 0.6 s for partial text (every 0.35 s while she talks), and again when a pause starts.
   - It ends the turn after `endOfTurnWait()` from `public/js/lib/turns.js`: short after "." or "?", long after "and…" or "um", based on the person's own pauses (`PauseStats`).
+  - Smart Turn's verdict on the pause shortens the wait when it's confident, and lengthens it a little when it's very sure the person isn't done. On Kokoro's synthetic speech it's sometimes wrong, so it mostly speeds things up.
 - **While she speaks:**
   - It sends `duck` when speech starts and `barge` once `wantsTheFloor()`.
   - It drops listening noises (`isBackchannel()`).

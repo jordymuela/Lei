@@ -37,6 +37,8 @@ export const config = {
   hearing: {
     /** auto (local if the models are downloaded), local, or browser (the page's own speech recognition). */
     engine: env.LEI_HEARING ?? "auto",
+    /** Smart Turn (judging the end of a turn from the voice) is used when downloaded, unless this is "off". */
+    smartTurn: env.LEI_SMART_TURN !== "off",
   },
   voice: {
     /** auto (the first one that's set up), kokoro, elevenlabs, openai, or browser. */

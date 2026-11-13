@@ -5,6 +5,7 @@ import { test } from "node:test";
 import { config } from "../server/config.ts";
 import { hearingInstalled, loadHearing } from "../server/hearing.ts";
 import { KOKORO_FILES, Kokoro } from "../server/kokoro.ts";
+import { SMART_TURN_FILE, loadSmartTurn } from "../server/smartturn.ts";
 
 // Runs only where the models have been downloaded (npm run get-voice). Kokoro
 // makes the speech, so this also checks that the two understand each other.
@@ -38,4 +39,12 @@ test("the local recognizer hears what Kokoro says, and the VAD notices it", { sk
   assert.ok(heardSpeech, "speech detected");
   for (let i = 0; i < 16000; i += 640) vad.accept(new Float32Array(640));
   assert.ok(!vad.speaking(), "silence after it");
+});
+
+test("Smart Turn hears a finished question as done and a trailing 'and' as not", { skip: !(ready && existsSync(path.join(config.voice.dir, SMART_TURN_FILE))) && "models aren't downloaded" }, async () => {
+  const [smartTurn, kokoro] = await Promise.all([loadSmartTurn(path.join(config.voice.dir, SMART_TURN_FILE)), Kokoro.load(config.voice.dir)]);
+  const done = await smartTurn.predict(to16k(await kokoro.synthesize("What's the weather like in Lisbon today?", "am_michael")));
+  const trailing = await smartTurn.predict(to16k(await kokoro.synthesize("I was thinking we could go to the beach and", "am_michael")));
+  assert.ok(done > 0.8, `done ${done}`);
+  assert.ok(trailing < 0.2, `trailing ${trailing}`);
 });

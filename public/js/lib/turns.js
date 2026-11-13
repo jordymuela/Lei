@@ -122,14 +122,26 @@ export class PauseStats {
  * How long (ms) to wait in silence before treating `text` as the end of the
  * person's turn: short after a question or a finished sentence, long after
  * "and…" or "um", and otherwise their usual pause.
+ *
+ * `finished` is Smart Turn's verdict from the voice itself (0–1), when the
+ * model is installed. A clear "done" ends the turn almost at once; a very
+ * clear "not done" (a held tone) waits a little longer. A missed "done" costs
+ * a slow reply, so it mostly speeds things up. Words like "and" still win.
  * @param {string} text
  * @param {number} [typical]
+ * @param {number | null} [finished]
  */
-export function endOfTurnWait(text, typical = 650) {
+export function endOfTurnWait(text, typical = 650, finished = null) {
   const t = text.trim();
   if (!t) return typical;
-  if (soundsUnfinished(t)) return Math.min(2500, Math.max(1200, Math.round(typical * 2.2)));
-  if (t.endsWith("?")) return Math.max(300, Math.round(typical * 0.6));
-  if (/[.!]$/.test(t)) return Math.max(350, Math.round(typical * 0.75));
-  return typical;
+  const unfinished = soundsUnfinished(t);
+  let wait = typical;
+  if (unfinished) wait = Math.min(2500, Math.max(1200, Math.round(typical * 2.2)));
+  else if (t.endsWith("?")) wait = Math.max(300, Math.round(typical * 0.6));
+  else if (/[.!]$/.test(t)) wait = Math.max(350, Math.round(typical * 0.75));
+  if (finished == null || unfinished) return wait;
+  if (finished >= 0.85) return 200;
+  if (finished >= 0.5) return Math.min(wait, 300);
+  if (finished < 0.15) return Math.max(wait, 1000);
+  return wait;
 }

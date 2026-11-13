@@ -31,7 +31,7 @@ That gets two things, both running inside Lei's server on your computer's CPU, w
 
 - **A human-sounding voice: Kokoro.** Pick one under **Settings**. Heart is the default; Bella, Emma, Nicole and Michael are also good.
 - **Ears: Parakeet speech recognition, with Silero voice detection.** What you say never leaves the computer, and she hears you better:
-  - **She answers as soon as you're done.** About half a second after a finished sentence or question; the browser's recognizer took one to two seconds. If you trail off with "and…" or "um", she waits. She also learns how long you usually pause.
+  - **She answers as soon as you're done.** About a third of a second after a finished sentence or question; the browser's recognizer took one to two seconds. A small model, Smart Turn, judges from your voice whether you've finished. If you trail off with "and…" or "um", she waits, and she learns how long you usually pause.
   - **You can talk over her.** Her voice dips the moment you start. "Wait", "stop" or a couple of real words stop her, and what you said becomes your next message. A "mm-hm" or "yeah" lets her carry on. Headphones make this work best. Without them, she filters out her own voice coming back through the speakers. Turn it off under **Settings → Let me talk over Lei**.
   - **She remembers only what you heard.** If you cut her off, her reply is saved up to where she stopped, marked with "…".
   - **No dead air.** If a reply is slow to start, she says a soft "Hmm." first.
@@ -48,6 +48,7 @@ Other notes:
 **Licenses.**
 - Kokoro's model is Apache-2.0 (by hexgrad); its files come from the kokoro-onnx project's release.
 - Parakeet TDT 0.6B v3 is NVIDIA's, under CC-BY-4.0: commercial use is allowed with attribution.
+- Smart Turn v3.2 is Pipecat's, under BSD-2-Clause; `get-voice` takes it from Pipecat's PyPI package and checks both hashes.
 - Silero VAD is MIT. sherpa-onnx, which runs them, is Apache-2.0.
 - The English phonemizer bundles eSpeak NG, which is GPL-3.0. That's fine for personal use; check it before you ship Lei to customers.
 
@@ -115,6 +116,7 @@ All settings are environment variables, read from `.env` if it exists:
 | `LEI_DATA_FILE` | `data/state.json` | Where the name, memories and conversation are saved. |
 | `LEI_VOICE` | `auto` | Which voice speaks: `kokoro`, `elevenlabs`, `openai` (a local speech server) or `browser`. `auto` takes the first one that's set up, in that order: ElevenLabs, local server, Kokoro, browser. |
 | `LEI_HEARING` | `auto` | Speech recognition: `local` (on this computer), or `browser`. `auto` is local when the models are downloaded. |
+| `LEI_SMART_TURN` | on | Set to `off` to judge the end of your turn from the words only. |
 | `LEI_VOICE_DIR` | `data/voices` | Where `npm run get-voice` puts the voice and speech recognition models. |
 | `LEI_TTS_URL`, `LEI_TTS_VOICE` | none | A local speech server with OpenAI's API (e.g. `http://127.0.0.1:8880/v1`) and its voice names, comma-separated. `LEI_TTS_MODEL` (default `tts-1`) and `LEI_TTS_KEY` if it needs them. |
 | `ELEVENLABS_API_KEY`, `ELEVENLABS_VOICE_ID` | none | Optional. With both set, replies use an ElevenLabs voice. |

@@ -51,3 +51,12 @@ test("the usual pause adapts to how the person talks", () => {
   slow.add(9000);
   assert.equal(slow.typical(), 1100);
 });
+
+test("Smart Turn's verdict from the voice shortens or stretches the wait, but 'and…' still wins", () => {
+  assert.equal(endOfTurnWait("Book it.", 650, 0.95), 200);
+  assert.equal(endOfTurnWait("book it", 650, 0.6), 300);
+  assert.equal(endOfTurnWait("Book it.", 650, 0.05), 1000);
+  assert.equal(endOfTurnWait("Book it.", 650, 0.35), 488);
+  assert.equal(endOfTurnWait("I want to go to the", 650, 0.95), 1430);
+  assert.equal(endOfTurnWait("", 650, 0.95), 650);
+});

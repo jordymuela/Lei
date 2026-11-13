@@ -21,12 +21,13 @@ function fakeVad(): Vad {
  * A session whose "recognizer" reveals `script` word by word, one word per
  * 0.25 s of audio heard, the way a real transcript grows.
  */
-function session(script: () => string) {
+function session(script: () => string, finished?: number) {
   const events: (HearingEvent & { at: number })[] = [];
   let fed = 0;
   const s = new ListenSession({
     vad: fakeVad(),
     pauses: new PauseStats(),
+    finished: finished === undefined ? undefined : async () => finished,
     transcribe: async (samples) => {
       const w = script().split(" ");
       return w.slice(0, Math.ceil(samples.length / RATE / 0.25)).join(" ");
@@ -126,4 +127,21 @@ test("typing instead resets what was being heard", async () => {
   s.control({ type: "reset" });
   await feed(2, false);
   assert.ok(!events.some((e) => e.type === "final"));
+});
+
+test("when Smart Turn hears a finished voice, the turn ends almost at once", async () => {
+  const { events, feed } = session(() => "Book a table for two.", 0.95);
+  await feed(1.5, true);
+  await feed(1.5, false);
+  const final = events.find((e) => e.type === "final");
+  assert.ok(final && final.at > 1.5 && final.at < 1.85, `final at ${final?.at}s`);
+});
+
+test("when Smart Turn hears a held, unfinished voice, it waits even after a full stop", async () => {
+  const { events, feed } = session(() => "Book a table for two.", 0.05);
+  await feed(1.5, true);
+  await feed(0.8, false);
+  assert.ok(!events.some((e) => e.type === "final"), "still waiting at 0.8 s of silence");
+  await feed(1, false);
+  assert.ok(events.some((e) => e.type === "final"));
 });
