@@ -138,4 +138,8 @@ New write routes get these checks automatically; keep them. The mic WebSocket is
 
 ## Tests
 
-The tests use `node:test` and need no network. `test/computer.test.ts` builds a temporary folder tree, including fake secret files, to check path confinement. `test/chat.test.ts` drives `runTurn()` with a fake client that replays scripted model rounds through `beta.messages.stream()`. Extend that pattern rather than calling the real API. `test/listening.test.ts` drives `ListenSession` with a fake VAD and a fake recognizer, in 20 ms frames; extend it for turn-taking changes. `test/hearing.test.ts` and the real-model test in `test/voice.test.ts` run only where the models are downloaded. The browser code under `public/js/` (other than `lib/`) has no automated tests. Check it by running the server and using the page.
+The tests use `node:test` and need no network. `test/computer.test.ts` builds a temporary folder tree, including fake secret files, to check path confinement. `test/chat.test.ts` drives `runTurn()` with a fake client that replays scripted model rounds through `beta.messages.stream()`. Extend that pattern rather than calling the real API. `test/listening.test.ts` drives `ListenSession` with a fake VAD and a fake recognizer, in 20 ms frames; extend it for turn-taking changes. `test/hearing.test.ts` and the real-model test in `test/voice.test.ts` run only where the models are downloaded. The browser code under `public/js/` (other than `lib/`) has no unit tests. Check it by running the server and using the page, or with the Playwright scripts in `scripts/e2e/`:
+- `talk.cjs` feeds a WAV file in as the mic, against a fake Claude endpoint.
+- `pair.cjs` walks a phone through pairing.
+
+**Where work stands:** `docs/HANDOFF.md` lists what's verified and what's next, and `docs/business-plan.md` explains why practice mode for Mexico is the product.

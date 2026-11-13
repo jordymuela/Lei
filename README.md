@@ -156,7 +156,9 @@ All settings are environment variables, read from `.env` if it exists:
 
 ## Roadmap
 
-[docs/roadmap.md](docs/roadmap.md) covers what similar projects do well, the voice options, running Lei on your phone and other computers, and the risks and security requirements to meet first.
+- [docs/roadmap.md](docs/roadmap.md): what similar projects do well, voice options, phones and other computers, and the risks and security requirements.
+- [docs/business-plan.md](docs/business-plan.md): how Lei makes money. Interview and work English for Mexico first, with pricing and unit economics.
+- [docs/HANDOFF.md](docs/HANDOFF.md): what's verified, what isn't, and the next tasks, written for whoever picks the work up on a Mac.
 
 ## Development
 
