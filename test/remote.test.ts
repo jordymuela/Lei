@@ -107,7 +107,12 @@ test("a phone pairs with the Mac's code, then can use Lei until it's removed", a
   assert.equal((await request(LOCAL, "DELETE", `/api/devices/${list.devices[0].id}`)).status, 200);
   assert.equal((await request(REMOTE, "GET", "/api/state", { cookie })).status, 401);
 
-  const log = await readFile(path.join(dir, "audit.log"), "utf8");
+  // The audit log is written in the background; give it a moment under load.
+  let log = "";
+  for (let i = 0; i < 40 && !log.includes("device_removed"); i++) {
+    log = await readFile(path.join(dir, "audit.log"), "utf8").catch(() => "");
+    if (!log.includes("device_removed")) await new Promise((r) => setTimeout(r, 50));
+  }
   assert.match(log, /"event":"device_paired","device":"Jordy's iPhone"/);
   assert.match(log, /"event":"device_removed","device":"Jordy's iPhone","by":"this computer"/);
 });
