@@ -25,10 +25,10 @@ The lessons are ranked by how much more human or useful they would make Lei.
 | # | What to copy | From | How, in Lei | Status |
 |---|---|---|---|---|
 | 1 | **A voice that sounds like a person** | Sesame, Kokoro | Kokoro in-process, one sentence at a time, with trimmed silences | **Done** |
-| 2 | **Let you talk over her** | Pipecat, LiveKit, Hume, OpenClaw | While she speaks, open a second mic with echo cancellation and run a small voice detector in the browser (Silero via `@ricky0123/vad-web`). Speech lowers her volume, and two real words stop her. A lone "mm" or "yeah" lets her carry on. | Next |
-| 3 | **Wait for the end of the thought, not a fixed pause** | LiveKit, OpenAI, ElevenLabs | Today the wait is 0.9 s or 2.2 s. Wait less after a finished sentence or a question, and longer after "and", "but" or "um". Learn your pace over time. Later: Pipecat's Smart Turn model (BSD, 8M parameters, ONNX) on the server. | Next |
-| 4 | **No dead air** | OpenAI's "preambles", ElevenLabs | One short spoken line before any slow tool. If nothing has been said after about 1.5 s, a soft "hmm", at most once per reply. | Next |
-| 5 | **Remember only what you heard** | Pipecat | On an interruption, save the reply only up to the last sentence actually spoken, so she doesn't "remember" saying things you never heard. | Next |
+| 2 | **Let you talk over her** | Pipecat, LiveKit, Hume, OpenClaw | The mic streams, echo-cancelled, to Silero VAD and Parakeet on the server. Speech dips her voice; "wait" or two real words stop her; "mm-hm" doesn't; her own echo is filtered by matching what she's saying. | **Done** |
+| 3 | **Wait for the end of the thought, not a fixed pause** | LiveKit, OpenAI, ElevenLabs | About 0.4–0.5 s after a finished sentence (was 1–2 s), longer after "and…" or "um", tuned to your own pauses. Next step: Pipecat's Smart Turn audio model. | **Done** |
+| 4 | **No dead air** | OpenAI's "preambles", ElevenLabs | A cached "Hmm." if no reply 1.3 s after you finish; persona keeps one-line updates before slow tools. | **Done** |
+| 5 | **Remember only what you heard** | Pipecat | An interrupted reply is saved up to where she stopped, marked "…", and the persona knows what that means. | **Done** |
 | 6 | **Layered memory** | OpenClaw, Leon, Letta, mem0 | Today: the last 60 facts as a flat list. Instead: a short curated profile that's always loaded, dated notes that are only ever added to, a `memory_search` tool, and a nightly tidy that marks old facts as superseded rather than deleting them. mem0 found that rewriting memories destroyed context. | Later |
 | 7 | **A little proactivity, with manners** | Leon's "pulse" | At most one unprompted remark per time window, sent over the reminder channel. If you wave it off, she drops the topic. | Later |
 | 8 | **Speak for the ear** | OpenClaw, Home Assistant | Code and long lists go on screen while she says "it's on screen". "Stop" and "what time is it" are answered without calling Claude. | Later |
@@ -143,7 +143,7 @@ Other computers (lei-node) ──outbound WebSocket────▶  Hub
 | 2. All computers | <ul><li>`lei-node` with pairing and an outbound connection</li><li>Signed approvals checked on the node</li><li>A "which computer" choice for tools</li><li>One reply at a time across devices</li><li>Reminders go to the device you used last</li></ul> | 10–14 |
 | 3. Extras | <ul><li>Siri Shortcut endpoint (1–2)</li><li>Read-only Telegram (2–3)</li><li>Native app (10–15)</li><li>Wake word on desktops (3–5)</li></ul> | 3–25 |
 
-Meanwhile the conversation improvements from section 1 (barge-in, smarter end of turn, no dead air, saving only what you heard) are about 4–6 days and are independent of all this.
+The conversation improvements from section 1 (barge-in, smarter end of turn, no dead air, saving only what you heard) are done, with speech recognition running locally (Parakeet). Remote devices will need the mic WebSocket behind the same login as everything else.
 
 ## 4. Risks
 

@@ -2,6 +2,10 @@
 // speaking right away. Shared by the browser; tested from Node.
 
 const BOUNDARY = /[.!?…。！？]+["'”’)\]]*\s+|\n+/g;
+/** Where a long first sentence may be cut so her voice starts sooner. */
+const CLAUSE = /[,;:—–]\s+/g;
+/** A first sentence longer than this starts speaking at its last comma. */
+const EARLY_AFTER = 40;
 
 /**
  * Index just past the last sentence boundary in `text`, or 0 when no
@@ -15,6 +19,31 @@ export function lastBoundary(text) {
   let m;
   while ((m = re.exec(text))) cut = m.index + m[0].length;
   return cut;
+}
+
+/** Index just past the last clause break (comma, semicolon, dash) with at least two words before it, or 0. */
+function lastClause(text) {
+  const re = new RegExp(CLAUSE.source, "g");
+  let cut = 0;
+  let m;
+  while ((m = re.exec(text))) if (text.slice(0, m.index).trim().split(/\s+/).length >= 2) cut = m.index + m[0].length;
+  return cut;
+}
+
+/**
+ * A reply cut to the part that was actually heard before an interruption:
+ * the first `chars` characters, backed up to a whole word, marked with "…".
+ * Returns "" when nothing was heard, and the text unchanged when all of it was.
+ * @param {string} text
+ * @param {number} chars
+ * @returns {string}
+ */
+export function cutToHeard(text, chars) {
+  if (chars >= text.trimEnd().length - 1) return text;
+  let head = text.slice(0, Math.max(0, chars));
+  if (/\S/.test(text[chars] ?? "")) head = head.replace(/\S+$/, "");
+  head = head.trimEnd().replace(/[,;:—–-]+$/, "");
+  return head ? head + "…" : "";
 }
 
 /**
@@ -68,7 +97,10 @@ export class SentenceFeed {
     // Never cut inside an [aside] that hasn't closed yet, or half of it would be spoken.
     const open = rest.lastIndexOf("[");
     if (!final && open > rest.lastIndexOf("]")) rest = rest.slice(0, open);
-    const cut = final ? rest.length : lastBoundary(rest);
+    let cut = final ? rest.length : lastBoundary(rest);
+    // The first words of a reply decide how fast she seems: a long first
+    // sentence starts at its last comma instead of waiting for the full stop.
+    if (!cut && this.spoken === 0 && rest.length > EARLY_AFTER) cut = lastClause(rest);
     if (!cut) return "";
     this.spoken += cut;
     return rest.slice(0, cut);

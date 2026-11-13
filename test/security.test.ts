@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { hostname, refuseReason } from "../server/security.ts";
+import { hostname, refuseReason, refuseUpgrade } from "../server/security.ts";
 
 const local = { host: "127.0.0.1:3000" };
 
@@ -23,4 +23,11 @@ test("writes must come from this page, as JSON", () => {
   assert.match(refuseReason("POST", { ...json, "sec-fetch-site": "cross-site" }, "127.0.0.1") ?? "", /other websites/);
   assert.match(refuseReason("POST", { ...local, "content-type": "text/plain" }, "127.0.0.1") ?? "", /JSON/);
   assert.equal(refuseReason("DELETE", local, "127.0.0.1"), null);
+});
+
+test("the mic WebSocket only opens from this page", () => {
+  assert.equal(refuseUpgrade({ ...local, origin: "http://127.0.0.1:3000" }, "127.0.0.1"), null);
+  assert.match(refuseUpgrade({ ...local, origin: "https://evil.example" }, "127.0.0.1") ?? "", /other websites/);
+  assert.match(refuseUpgrade(local, "127.0.0.1") ?? "", /other websites/);
+  assert.match(refuseUpgrade({ host: "evil.example:3000", origin: "http://evil.example:3000" }, "127.0.0.1") ?? "", /localhost/);
 });

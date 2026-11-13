@@ -16,14 +16,17 @@
     "check": "npm run typecheck && npm test"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.135.0"
+    "@anthropic-ai/sdk": "^0.135.0",
+    "ws": "8.23.0"
   },
   "devDependencies": {
     "@types/node": "^22.20.5",
+    "@types/ws": "8.18.2",
     "typescript": "^7.0.2"
   },
   "optionalDependencies": {
     "onnxruntime-node": "1.30.0",
-    "phonemizer": "1.2.1"
+    "phonemizer": "1.2.1",
+    "sherpa-onnx-node": "2.0.1"
   }
 }

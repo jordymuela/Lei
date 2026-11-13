@@ -16,6 +16,7 @@ node --test test/chat.test.ts                      # one file
 node --test --test-name-pattern="refusal" test/    # tests whose name matches
 npm run typecheck          # tsc --noEmit (server, tests, public/js/lib)
 npm run check              # typecheck + tests
+npm run get-voice          # download the open-source models (Kokoro, Silero VAD, Parakeet) into data/voices
 ```
 
 Needs Node ≥ 22.18. Node runs the `.ts` files directly by stripping types, which has consequences:
@@ -25,15 +26,26 @@ Needs Node ≥ 22.18. Node runs the `.ts` files directly by stripping types, whi
 
 ## Architecture
 
-**One turn, end to end.** The browser `Listener` (`public/js/listener.js`, Web Speech API) turns continuous recognition into whole utterances after a pause. `app.js` POSTs it to `/api/chat`. The server saves the user message, then `runTurn()` (`server/chat.ts`) streams from Claude and runs the tool loop. Text deltas, saved memories and composed songs go back to the page as NDJSON lines; the `ChatEvent` union in `server/types.ts` is the wire contract. As text arrives, `Speaker` (`public/js/speaker.js`) speaks each finished sentence (`SentenceFeed` in `public/js/lib/sentences.js`). When it is done, the page plays any song and starts listening again.
+**One turn, end to end.** A listener turns speech into whole utterances, and `app.js` POSTs each one to `/api/chat`. There are two listeners:
+- `Ears` (`public/js/ears.js`), when the server has local hearing. It streams the mic to the server, which transcribes it.
+- `Listener` (`public/js/listener.js`), the browser's Web Speech API, otherwise. The server saves the user message, then `runTurn()` (`server/chat.ts`) streams from Claude and runs the tool loop. Text deltas, saved memories and composed songs go back to the page as NDJSON lines; the `ChatEvent` union in `server/types.ts` is the wire contract. As text arrives, `Speaker` (`public/js/speaker.js`) speaks each finished sentence (`SentenceFeed` in `public/js/lib/sentences.js`). When it is done, the page plays any song and starts listening again.
 
-**Half-duplex voice is deliberate.** `refresh()` in `app.js` pauses the listener whenever speech or music is playing, then resumes it 350 ms after. Browser speech recognition has no echo cancellation for the page's own audio, so listening while she speaks would transcribe her own voice. Interrupting goes through `interrupt()`: tapping the figure, pressing Esc, the stop button, or starting a new message. It aborts the fetch, and the server sees the closed response and aborts the Claude stream.
+**Her turn and yours.** `refresh()` in `app.js` calls `listener.pause()` whenever speech or music is playing, and `resume()` when it stops.
+- `Listener` really stops: browser recognition has no echo cancellation for the page's own audio, so it would transcribe her voice.
+- `Ears` treats pause/resume as "her turn" and "your turn". With `prefs.bargeIn`, it keeps streaming through her turn so the person can talk over her. Otherwise it goes quiet like `Listener`.
+
+Interrupting goes through `interrupt()`: tapping the figure, pressing Esc, the stop button, starting a new message, or a server `barge` event. It aborts the fetch, and the server sees the closed response and aborts the Claude stream. If the voice was speaking, `interrupt()` also cuts the reply to what was heard:
+- `speaker.heardChars()` measures it.
+- `cutToHeard()` in `lib/sentences.js` cuts the text.
+- `POST /api/heard` saves the cut, keyed by the reply's `at` from the `turn` event. A report that arrives before the aborted reply is saved waits in `heardCuts`.
+
+The persona knows that a reply ending in "…" was cut off there.
 
 **Persistence.** `Store` (`server/store.ts`) holds the whole `State` (profile, memories, transcript) in memory. It writes the file atomically and one write at a time. All mutations must go through `store.update()`. The server is the source of truth. The page keeps a copy for rendering and stores only per-device voice settings in `localStorage` (`lei.prefs`). On an abort the server still saves the partial reply; on a refusal or error it saves nothing.
 
 **Two modes, one codebase.** `LEI_MODE` (`config.mode`) picks `companion` (the Her-style friend) or `practice` (an English speaking partner for Portuguese/Spanish speakers). The mode changes:
 - the persona (`personaPrompt` vs `practicePrompt`) and the naming prompt;
-- the tools (`toolsFor()`: companion gets `compose`, practice gets `correct`);
+- the tools (`toolsFor()`: companion gets `compose` and the computer tools, practice gets `correct`);
 - the setup questions (`steps()` in `app.js`).
 
 Practice mode also sends `ui` (the learner's language, for `i18n.js`) and `speechLang` (the target language, for `Listener` and `Speaker`) in `/api/state`. Corrections are stored in `State.corrections`, tied to the user message they belong to by `forAt`. Text the tutor writes in the learner's own language goes in `[square brackets]`: `speakable()` drops it from speech, and `splitAsides()` renders it as a quieter line.
@@ -65,15 +77,36 @@ Rules for these tools:
 - **Packages:** `onnxruntime-node` and `phonemizer` are optional dependencies, imported only when Kokoro loads. `phonemizer`'s Emscripten glue adds process-wide crash handlers, and `loadEnglishPhonemizer()` removes them; keep that.
 - **Tests:** the voice test that runs the real model is skipped unless the files are in `LEI_VOICE_DIR`.
 
+**Local hearing** (`server/hearing.ts`, `server/listening.ts`). Silero VAD and Parakeet TDT 0.6B v3 run in-process through `sherpa-onnx-node`, an optional dependency loaded with `createRequire`. `createHearing()` returns null when the models aren't downloaded or `LEI_HEARING=browser`, and the page then uses `Listener`.
+- **Transport:** the page's AudioWorklet (`public/js/mic-worklet.js`) sends 16 kHz 16-bit frames over a WebSocket at `/api/listen`. Each connection gets one `ListenSession`.
+- **Clock:** `ListenSession` counts time in samples, not wall-clock, so tests can feed audio deterministically.
+- **Turn-taking:**
+  - It decodes the utterance every 0.6 s for partial text (every 0.35 s while she talks), and again when a pause starts.
+  - It ends the turn after `endOfTurnWait()` from `public/js/lib/turns.js`: short after "." or "?", long after "and…" or "um", based on the person's own pauses (`PauseStats`).
+- **While she speaks:**
+  - It sends `duck` when speech starts and `barge` once `wantsTheFloor()`.
+  - It drops listening noises (`isBackchannel()`).
+  - It drops her own echo (`isEcho()` against the sentences the page reports through `herSentence()`), but only for utterances that began while she was talking.
+- The page shows partials in `#heard` and sends finals like typed messages.
+
+**Speaker extras** (`public/js/speaker.js`).
+- `duck()` lowers the clip volume.
+- `onSentence` reports each sentence as it starts, so the server can tell her echo from the person.
+- Speed goes to the voice engine (`speed` in `/api/tts`), never `playbackRate`.
+- `SentenceFeed` starts a long first sentence at its last comma.
+- `filler()` plays a cached "Hmm." if no reply text arrives within `FILLER_MS` of a message.
+
+`?debug` shows per-turn timings under each reply, and the server logs `[turn] first words after N ms`.
+
 **Reminders** live in `State.reminders`. `ReminderClock` (`server/reminders.ts`) fires due ones every 10 s. It delivers them to open pages over server-sent events (`GET /api/events`), and keeps undelivered ones until a page connects.
 
 **Request checks.** `server/security.ts` guards every `/api/` route:
 - While the server listens on localhost, the Host header must be localhost. This blocks DNS rebinding.
 - Writes need a same-origin `Origin` (or none), no `Sec-Fetch-Site: cross-site`, and a JSON content type.
 
-New write routes get these checks automatically; keep them.
+New write routes get these checks automatically; keep them. The mic WebSocket is checked by `refuseUpgrade()`, which *requires* a same-origin `Origin`. Any website can open a WebSocket to localhost, so that check must stay.
 
-**Code shared by browser and server.** `public/js/lib/*.js` is plain ESM with no DOM access. The browser loads it directly and the server and tests import it. `notes.js` is the music score format (`NOTE:BEATS`, `+` for chords, `R` for rests): the server uses it to validate `compose` tool input, and `music.js` uses it to play songs. Keep these files DOM-free.
+**Code shared by browser and server.** `public/js/lib/*.js` is plain ESM with no DOM access. The browser loads it directly and the server and tests import it. `notes.js` is the music score format (`NOTE:BEATS`, `+` for chords, `R` for rests): the server uses it to validate `compose` tool input, and `music.js` uses it to play songs. `turns.js` holds the turn-taking rules, used by `server/listening.ts` and by the browser `Listener`. `sentences.js` holds `cutToHeard()`, used by the page and by `POST /api/heard`. Keep these files DOM-free.
 
 **Prompt layout** (`server/prompt.ts`):
 - `system[0]` is `personaPrompt(profile)`. It is stable per profile and marked `cache_control`.
@@ -92,4 +125,4 @@ New write routes get these checks automatically; keep them.
 
 ## Tests
 
-The tests use `node:test` and need no network. `test/computer.test.ts` builds a temporary folder tree, including fake secret files, to check path confinement. `test/chat.test.ts` drives `runTurn()` with a fake client that replays scripted model rounds through `beta.messages.stream()`. Extend that pattern rather than calling the real API. The browser code under `public/js/` (other than `lib/`) has no automated tests. Check it by running the server and using the page.
+The tests use `node:test` and need no network. `test/computer.test.ts` builds a temporary folder tree, including fake secret files, to check path confinement. `test/chat.test.ts` drives `runTurn()` with a fake client that replays scripted model rounds through `beta.messages.stream()`. Extend that pattern rather than calling the real API. `test/listening.test.ts` drives `ListenSession` with a fake VAD and a fake recognizer, in 20 ms frames; extend it for turn-taking changes. `test/hearing.test.ts` and the real-model test in `test/voice.test.ts` run only where the models are downloaded. The browser code under `public/js/` (other than `lib/`) has no automated tests. Check it by running the server and using the page.

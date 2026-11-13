@@ -6,7 +6,7 @@ A voice-first AI companion inspired by the film *Her*, built on Claude. You talk
 
 - Node.js 22.18 or newer. The server is TypeScript that Node runs directly, so there is no build step.
 - A Claude API key, or an `ant auth login` profile on this machine.
-- Chrome, Edge or Safari for talking out loud. Other browsers can still type, and replies are still spoken.
+- For talking out loud: any modern browser once the models are downloaded (see below); otherwise Chrome, Edge or Safari, whose built-in speech recognition Lei uses. You can always type, and replies are still spoken.
 
 ## Run it
 
@@ -18,24 +18,38 @@ npm start               # http://127.0.0.1:3000
 
 Open the page, go through setup, then tap the mic and talk. Lei listens until you pause, answers, and starts listening again once it has finished speaking. To cut it off, tap the figure or press Esc.
 
-## A human-sounding voice
+## Her voice and ears, on your computer
 
-Out of the box Lei speaks with your browser's built-in voices. For a voice that sounds like a person, download Kokoro, an open-source voice model:
+Out of the box, Lei uses your browser's voices and speech recognition. For a conversation that feels like talking to a person, download the open-source models once:
 
 ```bash
-npm run get-voice       # about 350 MB, once; checked against pinned SHA-256 hashes
+npm run get-voice       # about 850 MB, once; every file checked against a pinned SHA-256 hash
 npm start
 ```
 
-Then pick a voice under **Settings** (Heart is the default; Bella, Emma, Nicole and Michael are also good). Kokoro runs inside Lei's server on your computer's CPU: no GPU, no Python, no account, and what Lei says never leaves the computer. On an Apple Silicon Mac a sentence takes a fraction of a second.
+That gets two things, both running inside Lei's server on your computer's CPU, with no GPU, no Python and no account:
 
-- **Spanish and Portuguese voices** need one more program: `brew install espeak-ng` on a Mac. Without it, only the English voices are offered.
+- **A human-sounding voice: Kokoro.** Pick one under **Settings**. Heart is the default; Bella, Emma, Nicole and Michael are also good.
+- **Ears: Parakeet speech recognition, with Silero voice detection.** What you say never leaves the computer, and she hears you better:
+  - **She answers as soon as you're done.** About half a second after a finished sentence or question; the browser's recognizer took one to two seconds. If you trail off with "and…" or "um", she waits. She also learns how long you usually pause.
+  - **You can talk over her.** Her voice dips the moment you start. "Wait", "stop" or a couple of real words stop her, and what you said becomes your next message. A "mm-hm" or "yeah" lets her carry on. Headphones make this work best. Without them, she filters out her own voice coming back through the speakers. Turn it off under **Settings → Let me talk over Lei**.
+  - **She remembers only what you heard.** If you cut her off, her reply is saved up to where she stopped, marked with "…".
+  - **No dead air.** If a reply is slow to start, she says a soft "Hmm." first.
+
+Other notes:
+- Voice input now works in any browser that can record audio, Firefox included.
+- Add `?debug` to the page's address to see how long each part of a turn took.
+- **Spanish and Portuguese voices** need one more program: `brew install espeak-ng` on a Mac. Without it, only the English voices are offered. The speech recognition handles 25 European languages on its own.
 - **Other voices:**
-  - Any local speech server with OpenAI's `/v1/audio/speech` endpoint works: Kokoro-FastAPI, Chatterbox-TTS-Server, Orpheus-FastAPI or LocalAI. Set `LEI_TTS_URL` (and `LEI_TTS_VOICE`).
+  - Any local speech server with OpenAI's `/v1/audio/speech` endpoint works: Kokoro-FastAPI, Chatterbox-TTS-Server, Orpheus-FastAPI, mlx-audio or LocalAI. Set `LEI_TTS_URL` (and `LEI_TTS_VOICE`).
   - ElevenLabs works with `ELEVENLABS_API_KEY` and `ELEVENLABS_VOICE_ID`.
 - If the server voice fails for a sentence, the browser voice says it instead.
 
-Kokoro's model is Apache-2.0 (by hexgrad); the files come from the kokoro-onnx project's release. The English phonemizer bundles eSpeak NG, which is GPL-3.0. That's fine for personal use; check it before you ship Lei to customers.
+**Licenses.**
+- Kokoro's model is Apache-2.0 (by hexgrad); its files come from the kokoro-onnx project's release.
+- Parakeet TDT 0.6B v3 is NVIDIA's, under CC-BY-4.0: commercial use is allowed with attribution.
+- Silero VAD is MIT. sherpa-onnx, which runs them, is Apache-2.0.
+- The English phonemizer bundles eSpeak NG, which is GPL-3.0. That's fine for personal use; check it before you ship Lei to customers.
 
 ## What it can do on your computer
 
@@ -100,7 +114,8 @@ All settings are environment variables, read from `.env` if it exists:
 | `PORT` / `HOST` | `3000` / `127.0.0.1` | Where the server listens. Keep it on localhost: anyone who can reach it spends your Claude credits. |
 | `LEI_DATA_FILE` | `data/state.json` | Where the name, memories and conversation are saved. |
 | `LEI_VOICE` | `auto` | Which voice speaks: `kokoro`, `elevenlabs`, `openai` (a local speech server) or `browser`. `auto` takes the first one that's set up, in that order: ElevenLabs, local server, Kokoro, browser. |
-| `LEI_VOICE_DIR` | `data/voices` | Where `npm run get-voice` puts Kokoro. |
+| `LEI_HEARING` | `auto` | Speech recognition: `local` (on this computer), or `browser`. `auto` is local when the models are downloaded. |
+| `LEI_VOICE_DIR` | `data/voices` | Where `npm run get-voice` puts the voice and speech recognition models. |
 | `LEI_TTS_URL`, `LEI_TTS_VOICE` | none | A local speech server with OpenAI's API (e.g. `http://127.0.0.1:8880/v1`) and its voice names, comma-separated. `LEI_TTS_MODEL` (default `tts-1`) and `LEI_TTS_KEY` if it needs them. |
 | `ELEVENLABS_API_KEY`, `ELEVENLABS_VOICE_ID` | none | Optional. With both set, replies use an ElevenLabs voice. |
 | `ELEVENLABS_MODEL` | `eleven_flash_v2_5` | The ElevenLabs model. |
@@ -109,7 +124,7 @@ All settings are environment variables, read from `.env` if it exists:
 
 - Your conversation, Lei's notes about you, and its name are stored in one JSON file on this computer (`data/state.json`). **Settings → Start over** deletes it. You can read or remove any single memory under **Memories**.
 - What you say is sent to Claude to generate the reply, and so are the contents of any file Lei reads and its web searches.
-- Speech recognition is done by your browser. Chrome sends the audio to Google's speech service; Safari uses Apple's.
+- With the downloaded models, speech recognition runs on this computer and your voice never leaves it. Without them, your browser does it: Chrome sends the audio to Google's speech service, and Safari uses Apple's.
 - Kokoro speaks on this computer, so the replies' text stays here. With ElevenLabs configured, the replies' text is sent to ElevenLabs to be spoken.
 
 ## Roadmap

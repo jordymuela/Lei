@@ -8,9 +8,11 @@ import { Figure } from "./figure.js";
 import { makeT, translatePage } from "./i18n.js";
 import { splitAsides } from "./lib/sentences.js";
 import { stampText } from "./lib/time.js";
+import { Ears } from "./ears.js";
 import { Listener } from "./listener.js";
 import { Music } from "./music.js";
 import { SERVER_VOICE, Speaker, prettyVoice } from "./speaker.js";
+import { cutToHeard } from "./lib/sentences.js";
 
 const $ = (id) => document.getElementById(id);
 const app = $("app"), setupEl = $("setup"), logEl = $("log"), dock = $("dock"), ta = $("say"), sendBtn = $("sendBtn"), micBtn = $("micBtn");
@@ -39,11 +41,19 @@ const S = {
   voiceEngine: "",
   /** The reply being streamed: { ctl, msg, view, gotText, done, song } */
   live: null,
+  /** The latest reply, for cutting it to what was heard: { at, msg, view, raw } */
+  voiced: null,
+  /** Timings of the turn in progress, from when the person finished (see logTiming). */
+  timing: null,
 };
 const practice = () => S.mode === "practice";
 
 const PREFS_KEY = "lei.prefs";
-const prefs = { voiceOn: true, voice: "", rate: 1, autoListen: true };
+const prefs = { voiceOn: true, voice: "", rate: 1, autoListen: true, bargeIn: true };
+/** With ?debug, each reply shows how long its parts took. */
+const DEBUG = new URLSearchParams(location.search).has("debug");
+/** Silence after the person finishes before she says "hmm". */
+const FILLER_MS = 1300;
 try {
   Object.assign(prefs, JSON.parse(localStorage.getItem(PREFS_KEY) || "{}"));
 } catch {}
@@ -53,24 +63,37 @@ const savePrefs = () => {
   } catch {}
 };
 
-const speaker = new Speaker({ onChange: () => refresh(), onWord: (v) => figure.kick(v) });
+const speaker = new Speaker({
+  onChange: () => refresh(),
+  onWord: (v) => figure.kick(v),
+  onSentence: (text) => {
+    listener.herSentence?.(text);
+    if (S.timing?.view && !S.timing.voice) logTiming("voice");
+  },
+});
 const music = new Music({ onChange: () => refresh(), onNote: () => figure.kick(0.45) });
-const listener = new Listener({
+const hearingHooks = {
   onHeard: (text) => {
     $("heard").textContent = text;
   },
-  onUtterance: (text) => {
+  onUtterance: (text, timing) => {
     // While an action waits for approval, a spoken "yes" or "no" answers it.
     if (pendingApproval) {
       const answer = yesOrNo(text);
       if (answer !== null) return decide(answer);
     }
     if (!prefs.autoListen) listener.stop();
-    send(text);
+    send(text, timing);
   },
   onChange: () => refresh(),
   onError: (code) => toast(t({ denied: "mic.denied", "no-mic": "mic.noMic", network: "mic.network" }[code] || "mic.failed")),
-});
+  // Local hearing only: they started talking over her, then took the floor.
+  onDuck: (on) => speaker.duck(on),
+  onBarge: () => isBusy() && interrupt(),
+};
+/** The browser's speech recognition, or Lei's own (Ears) when the server has it; chosen in loadState(). */
+let listener = new Listener(hearingHooks);
+const ears = new Ears(hearingHooks);
 const figure = new Figure($("figure"), () => ({ phase: phase(), hearing: listener.hearing }));
 applyVoicePrefs();
 speaker.onVoices = () => {
@@ -83,6 +106,8 @@ function applyVoicePrefs() {
   speaker.enabled = prefs.voiceOn;
   speaker.voice = prefs.voice;
   speaker.rate = prefs.rate;
+  ears.setBargeIn(prefs.bargeIn);
+  speaker.prepareFillers();
 }
 
 /* ---------- Phase, status, and the half-duplex mic ---------- */
@@ -112,15 +137,17 @@ function refresh() {
   $("status").classList.toggle("busy", p !== "idle");
   $("stage").classList.toggle("can-interrupt", isBusy());
 
-  // Never listen while the voice or music is playing: the mic would hear it.
+  // Her turn while the voice or music plays: the browser's recognizer stops (it would hear her);
+  // local hearing keeps listening for the person talking over her, if that's allowed.
   const quiet = !speaker.speaking && !music.current;
   clearTimeout(resumeTimer);
   if (!quiet) listener.pause();
-  else if (listener.paused) resumeTimer = setTimeout(() => !speaker.speaking && !music.current && listener.resume(), 350);
+  // The browser's recognizer would catch the tail of her voice; local hearing filters her echo itself.
+  else if (listener.paused) resumeTimer = setTimeout(() => !speaker.speaking && !music.current && listener.resume(), listener === ears ? 0 : 350);
 
   micBtn.setAttribute("aria-pressed", String(listener.wanted));
   micBtn.setAttribute("aria-label", t(listener.wanted ? "mic.stop" : "mic.start"));
-  micBtn.classList.toggle("paused", listener.wanted && listener.paused);
+  micBtn.classList.toggle("paused", listener.wanted && !listener.active);
 
   const empty = !ta.value.trim(), stop = isBusy() && empty;
   sendBtn.classList.toggle("is-stop", stop);
@@ -129,13 +156,55 @@ function refresh() {
 }
 
 function interrupt() {
+  const voiced = S.voiced;
+  // How much of the reply she actually said, so it's remembered only that far.
+  const heard = voiced && prefs.voiceOn && speaker.speaking ? speaker.heardChars() : null;
   if (S.live) {
     S.live.ctl.abort();
     finalizeLive(S.live, true);
   }
   speaker.stop();
   music.stop(true);
+  if (voiced && heard !== null) trimToHeard(voiced, heard);
+  S.voiced = null;
   refresh();
+}
+
+/** Cuts an interrupted reply to what was heard, here and on the server. */
+function trimToHeard(v, chars) {
+  const lead = v.raw.length - v.raw.trimStart().length;
+  const n = Math.max(0, chars - lead);
+  const cut = cutToHeard(v.msg.text, n);
+  if (cut === v.msg.text) return;
+  api.heard(v.at, n).catch(() => {});
+  if (cut) {
+    v.msg.text = cut;
+    renderText(v.view.txt, cut);
+  } else if (!v.msg.song) {
+    const i = S.transcript.indexOf(v.msg);
+    if (i >= 0) S.transcript.splice(i, 1);
+    v.view.row.remove();
+    v.view.stamp?.remove();
+  }
+}
+
+function showHint() {
+  const key = !listener.supported ? "chat.hintNoMic" : listener === ears && prefs.bargeIn ? "chat.hintTalkOver" : "chat.hint";
+  $("hint").textContent = t(key, { name: S.profile?.companionName ?? "" });
+}
+
+/** Notes how long part of a turn took, from the moment the person finished. */
+function logTiming(step) {
+  const tm = S.timing;
+  tm[step] = Math.round(performance.now() - tm.t0);
+  if (step !== "voice") return;
+  const parts = [
+    tm.waitedMs != null && `heard you ${tm.waitedMs} ms after you stopped (transcribed in ${tm.decodeMs} ms)`,
+    tm.words != null && `first words +${tm.words} ms`,
+    `voice +${tm.voice} ms`,
+  ].filter(Boolean);
+  console.info("[lei]", parts.join(" · "));
+  if (DEBUG && tm.view) tm.view.row.append(h("p", "timing", parts.join(" · ")));
 }
 
 function setName(name, animate) {
@@ -375,11 +444,16 @@ function loadState(state) {
   S.transcript = state.transcript || [];
   S.corrections = state.corrections || [];
   S.mode = state.mode === "practice" ? "practice" : "companion";
+  if (state.hearing === "local" && ears.supported && listener !== ears) {
+    listener.stop();
+    listener = ears;
+  }
   speaker.serverAvailable = state.voice === "server";
   speaker.serverVoices = state.voices || [];
   S.voiceEngine = state.voiceEngine || "";
   speaker.lang = state.speechLang || "";
   listener.lang = state.speechLang || "";
+  speaker.prepareFillers();
   t = makeT(state.ui);
   translatePage(t);
 }
@@ -417,7 +491,7 @@ function enterChat(fresh) {
   setName(S.profile.companionName, fresh);
   ta.placeholder = t("chat.placeholder", { name: S.profile.companionName });
   micBtn.hidden = !listener.supported;
-  $("hint").textContent = t(listener.supported ? "chat.hint" : "chat.hintNoMic");
+  showHint();
   renderLog();
   refresh();
   if (!practice()) listenForReminders();
@@ -618,9 +692,16 @@ async function respond(body, quiet = false) {
   view.txt.append(dots);
   const live = { ctl, msg, view, gotText: false, done: false, song: null };
   S.live = live;
+  // The reply being spoken; `raw` is its text as streamed (heard positions count from there).
+  S.voiced = { at: msg.at, msg, view, raw: "" };
+  const voiced = S.voiced;
   speaker.begin();
   scrollEnd(true);
   refresh();
+  if (!body.text) S.timing = null;
+  else if (S.timing) S.timing.view = view;
+  // A slow start gets a soft "hmm", once, instead of dead air.
+  const filler = body.text ? setTimeout(() => !live.gotText && !live.done && speaker.filler(), FILLER_MS) : 0;
 
   let failure = null;
   let finished = false;
@@ -629,9 +710,14 @@ async function respond(body, quiet = false) {
       signal: ctl.signal,
       onEvent: (e) => {
         if (live.done) return;
-        if (e.type === "text") {
+        if (e.type === "turn") {
+          msg.at = voiced.at = e.at;
+        } else if (e.type === "text") {
+          if (!live.gotText && S.timing && S.timing.view === view) logTiming("words");
           live.gotText = true;
+          clearTimeout(filler);
           msg.text += e.delta;
+          voiced.raw = msg.text;
           renderText(view.txt, msg.text.trim());
           speaker.push(msg.text);
           scrollEnd();
@@ -668,6 +754,7 @@ async function respond(body, quiet = false) {
     if (err.name === "AbortError" || live.done) return;
     failure = { code: err.code || "offline", message: err.message };
   }
+  clearTimeout(filler);
   if (live.done) return;
   if (!finished && !failure) failure = { code: "offline", message: "" };
 
@@ -687,11 +774,13 @@ async function respond(body, quiet = false) {
   scrollEnd();
 }
 
-function send(text) {
+/** @param {{ waitedMs: number, decodeMs: number }} [timing] from local hearing, when spoken */
+function send(text, timing) {
   speaker.unlock();
   music.ensure();
   interrupt();
   clearNotices();
+  S.timing = { t0: performance.now(), ...timing };
   const m = { role: "user", text, at: Date.now() };
   addRow(m, lastAt());
   S.transcript.push(m);
@@ -714,6 +803,7 @@ $("composer").addEventListener("submit", (e) => {
   }
   ta.value = "";
   autosize();
+  listener.reset?.();
   send(v);
 });
 ta.addEventListener("keydown", (e) => {
@@ -826,7 +916,16 @@ function syncSettings() {
   $("rateOut").textContent = Number(prefs.rate).toFixed(2).replace(/\.?0+$/, "") + "×";
   $("autoListen").checked = prefs.autoListen;
   $("autoListen").disabled = !listener.supported;
-  $("micNote").textContent = listener.supported ? t("set.micNote", { name: S.profile.companionName }) : t("set.micNoteNone");
+  const name = S.profile.companionName;
+  const local = listener === ears;
+  $("bargeInRow").hidden = !local;
+  $("bargeIn").checked = prefs.bargeIn;
+  $("bargeInLabel").textContent = t("set.bargeIn", { name });
+  $("micNote").textContent = !listener.supported
+    ? t("set.micNoteNone")
+    : local
+      ? t("set.micNoteLocal") + " " + t(prefs.bargeIn ? "set.bargeInNote" : "set.micNote", { name })
+      : t("set.micNote", { name });
   $("renameIn").value = S.profile.companionName;
 }
 
@@ -855,6 +954,13 @@ $("rate").onchange = () => {
 $("autoListen").onchange = (e) => {
   prefs.autoListen = e.target.checked;
   savePrefs();
+};
+$("bargeIn").onchange = (e) => {
+  prefs.bargeIn = e.target.checked;
+  savePrefs();
+  applyVoicePrefs();
+  syncSettings();
+  showHint();
 };
 $("renameForm").onsubmit = async (e) => {
   e.preventDefault();

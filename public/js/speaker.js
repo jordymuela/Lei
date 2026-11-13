@@ -2,8 +2,18 @@
 // stream in, either with the browser's own speech synthesis or with audio
 // from the server's voice (POST /api/tts: Kokoro, ElevenLabs or a local
 // speech server). If a server clip fails, that sentence falls back to the browser voice.
+//
+// It also keeps track of how far into the reply she got, so an interrupted
+// reply is remembered only up to what was heard. Her voice can be ducked
+// while the person starts talking over her. A short "hmm" can fill a long
+// silence before a reply.
 
 import { SentenceFeed, speakable } from "./lib/sentences.js";
+
+/** What she says when a reply is slow to start. */
+// Short, so a reply that arrives right after isn't held up. ("Mm" would be spelled out as letters.)
+const FILLERS = ["Hmm.", "Let me see."];
+const DUCKED = 0.25;
 
 /** Voice ids for the server's voices: "server" (its default) or "server:<id>". */
 export const SERVER_VOICE = "server";
@@ -21,7 +31,7 @@ export function previewLine(lang) {
 }
 
 export class Speaker {
-  /** @param {{ onChange: () => void, onWord: (strength: number) => void }} hooks */
+  /** @param {{ onChange: () => void, onWord: (strength: number) => void, onSentence?: (text: string) => void }} hooks */
   constructor(hooks) {
     this.hooks = hooks;
     this.synth = "speechSynthesis" in window ? window.speechSynthesis : null;
@@ -44,6 +54,12 @@ export class Speaker {
     this.playing = false;
     this.unlocked = false;
     this.lastActive = 0;
+    /** The current reply's spoken parts: { from, to, startedAt, duration, done, fraction } (offsets into the reply text). */
+    this.parts = [];
+    this.ducked = false;
+    this.duckTimer = 0;
+    /** Cached filler clips by server voice id. */
+    this.fillers = new Map();
     this.onVoices = () => {};
     if (this.synth) {
       const load = () => {
@@ -119,21 +135,88 @@ export class Speaker {
   /** Start of a new reply. */
   begin() {
     this.feed.reset();
+    this.parts = [];
   }
 
   /** Hand over the reply so far; finished sentences start speaking now. */
   push(text, final = false) {
+    const from = this.feed.spoken;
     const chunk = this.feed.next(text, final);
-    if (chunk && this.enabled) this.say(chunk);
+    if (chunk && this.enabled) this.say(chunk, undefined, { from, to: this.feed.spoken });
   }
 
-  /** @param {string} chunk @param {string} [voice] overrides the chosen voice (previews) */
-  say(chunk, voice) {
+  /**
+   * @param {string} chunk
+   * @param {string} [voice] overrides the chosen voice (previews)
+   * @param {{ from: number, to: number }} [range] where the chunk sits in the reply, for heardChars()
+   */
+  say(chunk, voice, range) {
     const text = speakable(chunk);
     if (!text) return;
+    const part = range ? { ...range, startedAt: 0, duration: 0, done: false, fraction: null } : null;
+    if (part) this.parts.push(part);
     const server = voice ? voice.startsWith(SERVER_VOICE) && this.serverAvailable : this.usingServer;
-    if (server) this.#sayServer(text, voice || this.voice);
-    else this.#sayBrowser(text, voice);
+    if (server) this.#sayServer(text, voice || this.voice, part);
+    else this.#sayBrowser(text, voice, part);
+  }
+
+  /**
+   * How many characters of the current reply she has actually said: whole
+   * sentences played, plus the share of the one playing now.
+   */
+  heardChars() {
+    let chars = 0;
+    for (const p of this.parts) {
+      if (p.done) chars = p.to;
+      else {
+        if (p.startedAt) {
+          const share = p.fraction ?? (p.duration ? Math.min(1, (performance.now() - p.startedAt) / 1000 / p.duration) : 0);
+          chars = p.from + Math.floor((p.to - p.from) * share);
+        }
+        break;
+      }
+    }
+    return chars;
+  }
+
+  /** Lower her voice while the person may be starting to talk (server voice only; browser voices can't change volume mid-sentence). */
+  duck(on) {
+    if (this.ducked === on) return;
+    this.ducked = on;
+    clearInterval(this.duckTimer);
+    const target = on ? DUCKED : 1;
+    this.duckTimer = setInterval(() => {
+      const v = this.audio.volume;
+      const next = Math.abs(target - v) < 0.06 ? target : v + (target - v) * 0.35;
+      this.audio.volume = next;
+      if (next === target) clearInterval(this.duckTimer);
+    }, 16);
+  }
+
+  /** Fetches the filler clips for the current server voice, so filler() can play at once. */
+  prepareFillers() {
+    if (!this.usingServer) return;
+    const id = serverVoiceId(this.voice) || this.serverChoices()[0]?.id;
+    const key = `${id}@${this.rate}`;
+    if (!id || this.fillers.has(key)) return;
+    this.fillers.set(key, []);
+    for (const text of FILLERS) {
+      this.#fetchClip(text, id).then((blob) => blob && this.fillers.get(key)?.push(blob));
+    }
+  }
+
+  /** Says a short "hmm" if nothing is being said and a clip is ready. True if it did. */
+  filler() {
+    if (!this.enabled || !this.usingServer || this.pending) return false;
+    const id = serverVoiceId(this.voice) || this.serverChoices()[0]?.id;
+    const clips = this.fillers.get(`${id}@${this.rate}`);
+    if (!clips?.length) return false;
+    const blob = clips[Math.floor(Math.random() * clips.length)];
+    this.queue.unshift({ blob: Promise.resolve(blob), text: "", part: null });
+    this.pending++;
+    this.hooks.onChange();
+    this.#pump();
+    return true;
   }
 
   preview(voice) {
@@ -159,6 +242,9 @@ export class Speaker {
       this.synth?.cancel();
     } catch {}
     this.audio.pause();
+    this.ducked = false;
+    clearInterval(this.duckTimer);
+    this.audio.volume = 1;
     this.hooks.onChange();
   }
 
@@ -173,32 +259,47 @@ export class Speaker {
     return u;
   }
 
-  #sayBrowser(text, voiceName) {
+  #sayBrowser(text, voiceName, part) {
     if (!this.synth) return;
     const u = this.#utterance(text, voiceName);
     const gen = this.gen;
     u.onstart = () => {
       if (gen !== this.gen) return;
       this.lastActive = performance.now();
+      if (part) part.startedAt = performance.now();
+      this.hooks.onSentence?.(text);
       this.hooks.onWord(0.5);
     };
-    u.onboundary = () => gen === this.gen && this.hooks.onWord(0.3);
-    u.onend = u.onerror = () => gen === this.gen && this.#finished();
+    u.onboundary = (e) => {
+      if (gen !== this.gen) return;
+      if (part) part.fraction = Math.min(1, (e.charIndex || 0) / text.length);
+      this.hooks.onWord(0.3);
+    };
+    u.onend = u.onerror = () => {
+      if (gen !== this.gen) return;
+      if (part) part.done = true;
+      this.#finished();
+    };
     this.pending++;
     this.lastActive = performance.now();
     this.synth.speak(u);
     this.hooks.onChange();
   }
 
-  #sayServer(text, voice) {
-    const blob = fetch("/api/tts", {
+  #fetchClip(text, voiceId) {
+    return fetch("/api/tts", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ text, voice: serverVoiceId(voice) || this.serverChoices()[0]?.id }),
+      // Speed is applied by the voice itself: speeding up playback would change her pitch and sound worse.
+      body: JSON.stringify({ text, voice: voiceId, speed: this.rate }),
     })
       .then((r) => (r.ok ? r.blob() : null))
       .catch(() => null);
-    this.queue.push({ blob, text });
+  }
+
+  #sayServer(text, voice, part) {
+    const blob = this.#fetchClip(text, serverVoiceId(voice) || this.serverChoices()[0]?.id);
+    this.queue.push({ blob, text, part });
     this.pending++;
     this.lastActive = performance.now();
     this.hooks.onChange();
@@ -210,23 +311,30 @@ export class Speaker {
     if (this.playing || !this.queue.length) return;
     this.playing = true;
     const gen = this.gen;
-    const { blob: next, text } = this.queue.shift();
+    const { blob: next, text, part } = this.queue.shift();
     next.then((blob) => {
       if (gen !== this.gen) return;
-      if (!blob) return this.#fallback(text, gen);
+      if (!blob) return this.#fallback(text, gen, part);
       const url = URL.createObjectURL(blob);
       const end = () => {
         URL.revokeObjectURL(url);
-        if (gen === this.gen) this.#finished();
+        if (gen !== this.gen) return;
+        if (part) part.done = true;
+        this.#finished();
       };
       this.audio.onended = end;
       this.audio.onerror = end;
+      this.audio.onloadedmetadata = () => part && (part.duration = this.audio.duration || 0);
       this.audio.src = url;
-      this.audio.playbackRate = this.rate;
+      this.audio.playbackRate = 1;
+      this.audio.volume = this.ducked ? DUCKED : 1;
       this.audio
         .play()
         .then(() => {
+          if (gen !== this.gen) return;
           this.lastActive = performance.now();
+          if (part) part.startedAt = performance.now();
+          if (text) this.hooks.onSentence?.(text);
           this.hooks.onWord(0.5);
         })
         .catch(end);
@@ -234,14 +342,23 @@ export class Speaker {
   }
 
   // The server couldn't voice this sentence: say it with the browser voice rather than skip it.
-  #fallback(text, gen) {
-    if (!this.synth) return this.#finished();
+  #fallback(text, gen, part) {
+    if (!this.synth || !text) {
+      if (part) part.done = true;
+      return this.#finished();
+    }
     const u = this.#utterance(text);
     u.onstart = () => {
       this.lastActive = performance.now();
+      if (part) part.startedAt = performance.now();
+      this.hooks.onSentence?.(text);
       this.hooks.onWord(0.5);
     };
-    u.onend = u.onerror = () => gen === this.gen && this.#finished();
+    u.onend = u.onerror = () => {
+      if (gen !== this.gen) return;
+      if (part) part.done = true;
+      this.#finished();
+    };
     this.lastActive = performance.now();
     this.synth.speak(u);
   }

@@ -1,0 +1,134 @@
+// Local speech recognition, so what you say never leaves the computer:
+// - Silero VAD (MIT) notices when someone is speaking.
+// - Parakeet TDT 0.6B v3 (NVIDIA, CC-BY-4.0) turns speech into text, with
+//   punctuation, in 25 European languages.
+// Both run in this server through sherpa-onnx (Apache-2.0).
+// `npm run get-voice` downloads the models; without them the page falls back
+// to the browser's speech recognition.
+
+import { existsSync } from "node:fs";
+import { createRequire } from "node:module";
+import os from "node:os";
+import path from "node:path";
+import type { Config } from "./config.ts";
+
+export const HEARING_RATE = 16_000;
+
+const RELEASE = "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/";
+export const VAD_FILE = "silero_vad.onnx";
+export const PARAKEET_DIR = "sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8";
+const PARAKEET_FILES = ["encoder.int8.onnx", "decoder.int8.onnx", "joiner.int8.onnx", "tokens.txt"];
+
+/** What `npm run get-voice` fetches for hearing; archives are unpacked into `unpacksTo`. */
+export const HEARING_FILES: { name: string; size: number; sha256: string; url: string; unpacksTo?: string }[] = [
+  { name: VAD_FILE, size: 643_854, sha256: "9e2449e1087496d8d4caba907f23e0bd3f78d91fa552479bb9c23ac09cbb1fd6" },
+  { name: PARAKEET_DIR + ".tar.bz2", size: 487_211_443, sha256: "1495e91b59d7fc53ddca91f3431758ec99f8fa253fdb0e1e851be0f72b14b0f9", unpacksTo: PARAKEET_DIR },
+].map((f) => ({ ...f, url: RELEASE + f.name }));
+
+export const hearingInstalled = (dir: string) =>
+  existsSync(path.join(dir, VAD_FILE)) && PARAKEET_FILES.every((f) => existsSync(path.join(dir, PARAKEET_DIR, f)));
+
+/** Tells whether someone is speaking right now. One per listener: it keeps state. */
+export interface Vad {
+  accept(samples: Float32Array): void;
+  speaking(): boolean;
+  reset(): void;
+}
+
+export interface Hearing {
+  /** Text for 16 kHz mono audio ("" for silence or noise). */
+  transcribe(samples: Float32Array): Promise<string>;
+  createVad(): Vad;
+}
+
+/** The bits of sherpa-onnx-node used here (it ships no TypeScript types). */
+interface Sherpa {
+  OfflineRecognizer: {
+    createAsync(config: object): Promise<{
+      createStream(): { acceptWaveform(w: { samples: Float32Array; sampleRate: number }): void };
+      decodeAsync(stream: unknown): Promise<{ text: string }>;
+    }>;
+  };
+  Vad: new (
+    config: object,
+    bufferSeconds: number,
+  ) => { acceptWaveform(s: Float32Array): void; isDetected(): boolean; isEmpty(): boolean; pop(): void; reset(): void };
+}
+
+/** Local hearing if it's wanted and downloaded; null (with a reason logged) means the browser listens instead. */
+export async function createHearing(c: Config): Promise<Hearing | null> {
+  if (c.hearing.engine === "browser") return null;
+  if (!hearingInstalled(c.voice.dir)) {
+    if (c.hearing.engine === "local") console.warn("[hearing] LEI_HEARING=local, but the models aren't downloaded (npm run get-voice).");
+    return null;
+  }
+  try {
+    return await loadHearing(c.voice.dir);
+  } catch (err) {
+    console.warn(`[hearing] didn't load (${err instanceof Error ? err.message : err}); the page will use the browser's speech recognition.`);
+    return null;
+  }
+}
+
+/** Loads both models (about 2 s) and warms the recognizer up. */
+export async function loadHearing(dir: string): Promise<Hearing> {
+  const sherpa = createRequire(import.meta.url)("sherpa-onnx-node") as Sherpa;
+  const model = path.join(dir, PARAKEET_DIR);
+  const threads = Math.max(1, Math.min(4, Math.floor(os.availableParallelism() / 2)));
+  const recognizer = await sherpa.OfflineRecognizer.createAsync({
+    featConfig: { sampleRate: HEARING_RATE, featureDim: 80 },
+    modelConfig: {
+      transducer: {
+        encoder: path.join(model, "encoder.int8.onnx"),
+        decoder: path.join(model, "decoder.int8.onnx"),
+        joiner: path.join(model, "joiner.int8.onnx"),
+      },
+      tokens: path.join(model, "tokens.txt"),
+      modelType: "nemo_transducer",
+      numThreads: threads,
+      provider: "cpu",
+      debug: 0,
+    },
+  });
+  const transcribe = async (samples: Float32Array) => {
+    // Under a tenth of a second is a click, not a word.
+    if (samples.length < HEARING_RATE / 10) return "";
+    const stream = recognizer.createStream();
+    stream.acceptWaveform({ samples, sampleRate: HEARING_RATE });
+    return (await recognizer.decodeAsync(stream)).text.trim();
+  };
+  await transcribe(new Float32Array(HEARING_RATE));
+  const vadModel = path.join(dir, VAD_FILE);
+  return {
+    transcribe,
+    createVad() {
+      const vad = new sherpa.Vad(
+        {
+          sileroVad: {
+            model: vadModel,
+            threshold: 0.5,
+            // Report silence quickly; how long a pause ends the turn is decided in listening.ts.
+            minSilenceDuration: 0.1,
+            minSpeechDuration: 0.1,
+            windowSize: 512,
+            maxSpeechDuration: 30,
+          },
+          sampleRate: HEARING_RATE,
+          numThreads: 1,
+          provider: "cpu",
+          debug: 0,
+        },
+        30,
+      );
+      return {
+        accept(samples) {
+          vad.acceptWaveform(samples);
+          // Finished segments aren't used (listening.ts keeps its own audio); don't let them pile up.
+          while (!vad.isEmpty()) vad.pop();
+        },
+        speaking: () => vad.isDetected(),
+        reset: () => vad.reset(),
+      };
+    },
+  };
+}

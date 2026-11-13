@@ -5,19 +5,46 @@ import { stat } from "node:fs/promises";
 import { type IncomingMessage, type ServerResponse, createServer } from "node:http";
 import path from "node:path";
 import { Readable } from "node:stream";
+import { WebSocketServer } from "ws";
+import { cutToHeard } from "../public/js/lib/sentences.js";
 import { SetupError, nameCompanion, runTurn } from "./chat.ts";
 import type { ApprovalRequest } from "./computer.ts";
 import { config } from "./config.ts";
+import { createHearing, hearingInstalled } from "./hearing.ts";
+import { ListenSession } from "./listening.ts";
 import { welcomeBackNudge } from "./prompt.ts";
 import { ReminderClock } from "./reminders.ts";
-import { refuseReason } from "./security.ts";
+import { refuseReason, refuseUpgrade } from "./security.ts";
 import { LIMITS, Store, addMessage } from "./store.ts";
 import { createVoice, kokoroInstalled } from "./tts.ts";
+import { PauseStats } from "../public/js/lib/turns.js";
 import type { ChatEvent, Reminder, State } from "./types.ts";
 
 const client = new Anthropic();
 const store = new Store(config.dataFile);
-const voice = await createVoice(config);
+const [voice, hearing] = await Promise.all([createVoice(config), createHearing(config)]);
+/** How the person pauses mid-sentence, learned across pages (one person per install). */
+const pauses = new PauseStats();
+
+/**
+ * Interrupted replies are saved only up to what was heard (POST /api/heard).
+ * A report can come in before the aborted reply is saved; it waits here, by the reply's `at`.
+ */
+const heardCuts = new Map<number, number>();
+
+/** Cuts the saved reply with this `at` to what was heard; false if there's no such reply yet. */
+async function applyHeard(at: number, chars: number): Promise<boolean> {
+  let found = false;
+  await store.update((s) => {
+    const i = s.transcript.findIndex((m) => m.role === "assistant" && m.at === at);
+    if (i < 0) return;
+    found = true;
+    const cut = cutToHeard(s.transcript[i].text, chars);
+    if (cut) s.transcript[i].text = cut;
+    else if (!s.transcript[i].song) s.transcript.splice(i, 1);
+  });
+  return found;
+}
 
 /** Open pages listening on GET /api/events (server-sent events), for reminders. */
 const listeners = new Set<ServerResponse>();
@@ -100,6 +127,7 @@ const publicState = (s: State) => ({
   transcript: s.transcript,
   corrections: s.corrections,
   voice: voice ? "server" : "browser",
+  hearing: hearing ? "local" : "browser",
   voiceEngine: voice?.name ?? null,
   voices: voice?.voices ?? [],
   mode: config.mode,
@@ -152,6 +180,8 @@ async function chat(req: IncomingMessage, res: ServerResponse): Promise<void> {
   });
 
   const startedAt = Date.now();
+  let firstWords = 0;
+  send({ type: "turn", at: startedAt });
   try {
     const result = await runTurn({
       client,
@@ -160,7 +190,10 @@ async function chat(req: IncomingMessage, res: ServerResponse): Promise<void> {
       nudge,
       signal: abort.signal,
       on: {
-        text: (delta) => send({ type: "text", delta }),
+        text: (delta) => {
+          firstWords ||= Date.now() - startedAt;
+          send({ type: "text", delta });
+        },
         memory: (memory) => send({ type: "memory", memory }),
         song: (song) => send({ type: "song", song }),
         correction: (correction) => send({ type: "correction", correction }),
@@ -173,7 +206,13 @@ async function chat(req: IncomingMessage, res: ServerResponse): Promise<void> {
     if (result.end !== "refused" && (result.text.trim() || result.song)) {
       saved = { role: "assistant" as const, text: result.text.trim(), at: startedAt, ...(result.song ? { song: result.song } : {}) };
       await store.update((s) => addMessage(s, saved!));
+      const heard = heardCuts.get(startedAt);
+      if (heard !== undefined) {
+        heardCuts.delete(startedAt);
+        await applyHeard(startedAt, heard);
+      }
     }
+    console.log(`[turn] first words after ${firstWords ? firstWords + " ms" : "—"}, ${result.end} after ${Date.now() - startedAt} ms`);
     if (result.end === "refused") send({ type: "error", code: "refused", message: "Declined to answer." });
     else if (result.end !== "aborted") send({ type: "done", message: saved });
   } catch (err) {
@@ -273,18 +312,31 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
     return sendJson(res, 200, publicState(state));
   }
 
+  if (p === "/api/heard" && m === "POST") {
+    const body = await readJson(req);
+    const at = Number(body.at);
+    const chars = Number(body.chars);
+    if (!Number.isFinite(at) || !Number.isInteger(chars) || chars < 0) throw new HttpError(400, "Send the reply's at and the characters heard");
+    if (!(await applyHeard(at, chars))) {
+      heardCuts.set(at, chars);
+      if (heardCuts.size > 20) heardCuts.delete(heardCuts.keys().next().value!);
+    }
+    return sendJson(res, 200, { ok: true });
+  }
+
   if (p === "/api/tts" && m === "POST") {
     if (!voice) throw new HttpError(404, "Server voice isn't configured");
     const body = await readJson(req);
     const text = str(body.text, 1000);
     if (!text) throw new HttpError(400, "Nothing to say");
     const asked = str(body.voice, 80);
+    const speed = Math.min(1.5, Math.max(0.7, Number(body.speed) || 1));
     const id = voice.voices.some((v) => v.id === asked) ? asked : voice.voices[0].id;
     const abort = new AbortController();
     res.on("close", () => abort.abort());
     let audio: Response;
     try {
-      audio = await voice.speak(text, id, abort.signal);
+      audio = await voice.speak(text, id, abort.signal, speed);
     } catch (err) {
       if (abort.signal.aborted) return;
       console.error(`[voice] ${err instanceof Error ? err.message : err}`);
@@ -320,13 +372,55 @@ const server = createServer((req, res) => {
   });
 });
 
+// The mic stream for local hearing: binary frames are 16 kHz 16-bit mono audio, text frames are JSON controls.
+const sockets = new WebSocketServer({ noServer: true, maxPayload: 64 * 1024 });
+server.on("upgrade", (req, socket, head) => {
+  // An unhandled socket error would crash the server; the connection just closes.
+  socket.on("error", () => {});
+  const p = new URL(req.url ?? "/", "http://localhost").pathname;
+  const refused = p !== "/api/listen" ? "Not found" : !hearing ? "Local hearing isn't set up" : refuseUpgrade(req.headers, config.host);
+  if (refused || !hearing) {
+    socket.end(`HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\n${refused}`);
+    return;
+  }
+  sockets.handleUpgrade(req, socket, head, (ws) => {
+    // Oversized or malformed frames close the connection; without a listener they'd crash the server.
+    ws.on("error", () => {});
+    const session = new ListenSession({
+      vad: hearing.createVad(),
+      transcribe: hearing.transcribe,
+      pauses,
+      send: (e) => {
+        if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(e));
+      },
+    });
+    ws.on("message", (data, isBinary) => {
+      const buf = Array.isArray(data) ? Buffer.concat(data) : Buffer.from(data as ArrayBuffer);
+      if (isBinary) {
+        const samples = new Float32Array(buf.length >> 1);
+        for (let i = 0; i < samples.length; i++) samples[i] = buf.readInt16LE(i * 2) / 32768;
+        session.audio(samples);
+      } else {
+        let msg: { type?: unknown; on?: unknown; text?: unknown; bargeIn?: unknown };
+        try {
+          msg = JSON.parse(buf.toString("utf8"));
+        } catch {
+          return;
+        }
+        if (msg?.type === "speaking") session.control({ type: "speaking", on: msg.on === true, text: typeof msg.text === "string" ? msg.text.slice(0, 2000) : undefined });
+        else if (msg?.type === "mode") session.control({ type: "mode", bargeIn: msg.bargeIn !== false });
+        else if (msg?.type === "reset") session.control({ type: "reset" });
+      }
+    });
+  });
+});
+
 server.listen(config.port, config.host, () => {
   reminders.start();
-  const voiceName = voice ? `voice: ${voice.name}` : "browser voices";
+  const voiceName = `${voice ? `voice: ${voice.name}` : "browser voices"}, ${hearing ? "hearing: on this computer" : "hearing: browser"}`;
   console.log(`Lei is listening on http://${config.host}:${config.port}  (model ${config.model}, effort ${config.effort}, ${voiceName})`);
-  if (!voice && config.voice.engine === "auto" && !kokoroInstalled(config)) {
-    console.log("For a natural open-source voice that runs on this computer, run: npm run get-voice");
-  }
+  const missing = (!voice && config.voice.engine === "auto" && !kokoroInstalled(config)) || (!hearing && config.hearing.engine === "auto" && !hearingInstalled(config.voice.dir));
+  if (missing) console.log("For an open-source voice and speech recognition that run on this computer, run: npm run get-voice");
   if (config.mode === "companion" && config.computer) {
     console.log(
       `Can look through ${config.workspace}${config.web ? " and search the web" : ""}; commands, file writes and apps wait for your OK. Set LEI_COMPUTER=off to turn this off.`,

@@ -31,6 +31,7 @@ export const api = {
   clearTranscript: () => call("DELETE", "/api/transcript"),
   reset: () => call("DELETE", "/api/state"),
   approve: (id, allow) => call("POST", "/api/approve", { id, allow }),
+  heard: (at, chars) => call("POST", "/api/heard", { at, chars }),
 };
 
 /**

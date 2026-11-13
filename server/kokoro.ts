@@ -120,6 +120,8 @@ export function normalizeEnglish(text: string): string {
     .replace(/\b(?:Mrs\.|MRS\.(?= [A-Z]))/g, "Mrs")
     .replace(/\betc\.(?! [A-Z])/gi, "etc")
     .replace(/\b(y)eah?\b/gi, "$1e'a")
+    // eSpeak spells "mm" out as letters; say it as a sound.
+    .replace(/\b(?:m{2,}|hm{2,}|mhm+)\b/gi, "hmm")
     .replace(/\d*\.\d+|\b\d{4}s?\b|(?<!:)\b(?:[1-9]|1[0-2]):[0-5]\d\b(?!:)/g, splitNumber)
     .replace(/(?<=\d),(?=\d)/g, "")
     .replace(/[$£]\d+(?:\.\d+)?(?: hundred| thousand| (?:[bm]|tr)illion)*\b|[$£]\d+\.\d\d?\b/gi, sayMoney)
@@ -355,17 +357,17 @@ export class Kokoro {
     return english ? fixEnglish(ps, family === "b") : ps.trim();
   }
 
-  /** One sentence of speech at 24 kHz. Requests run one at a time, in the order they came. */
-  synthesize(text: string, voiceId: string, signal?: AbortSignal): Promise<Float32Array> {
+  /** One sentence of speech at 24 kHz, `speed` 0.5–2. Requests run one at a time, in the order they came. */
+  synthesize(text: string, voiceId: string, signal?: AbortSignal, speed = 1): Promise<Float32Array> {
     const run = this.#queue.then(() => {
       signal?.throwIfAborted();
-      return this.#synthesize(text, voiceId);
+      return this.#synthesize(text, voiceId, Math.min(2, Math.max(0.5, speed)));
     });
     this.#queue = run.catch(() => {});
     return run;
   }
 
-  async #synthesize(text: string, voiceId: string): Promise<Float32Array> {
+  async #synthesize(text: string, voiceId: string, speed: number): Promise<Float32Array> {
     const voice = this.voices.find((v) => v.id === voiceId) ?? this.voices[0];
     const style = this.#styles.get(voice.id)!;
     const { Tensor } = this.#ort;
@@ -377,7 +379,7 @@ export class Kokoro {
       const out = await this.#session.run({
         [tokensInput]: new Tensor("int64", BigInt64Array.from([0, ...ids, 0], (n) => BigInt(n)), [1, ids.length + 2]),
         style: new Tensor("float32", style.slice(row, row + STYLE_SIZE), [1, STYLE_SIZE]),
-        speed: new Tensor("float32", new Float32Array([1]), [1]),
+        speed: new Tensor("float32", new Float32Array([speed]), [1]),
       });
       pieces.push(trimSilence(out[this.#session.outputNames[0]].data as Float32Array));
     }

@@ -6,12 +6,16 @@
 // microphone doesn't transcribe her own voice (half-duplex). Interrupting is
 // done by tapping the figure or pressing Esc, not by talking over her.
 
+import { soundsUnfinished } from "./lib/turns.js";
+
 const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
 
 /** Silence that ends an utterance once the recognizer has finalized the words. */
-const PAUSE_MS = 900;
+const PAUSE_MS = 700;
+/** After words like "and", "but" or "um", which usually mean more is coming. */
+const PAUSE_UNFINISHED_MS = 1700;
 /** Longer wait when the last words are still provisional. */
-const PAUSE_INTERIM_MS = 2200;
+const PAUSE_INTERIM_MS = 2000;
 
 export class Listener {
   /**
@@ -122,7 +126,8 @@ export class Listener {
     const heard = [this.buffer, this.interim].filter(Boolean).join(" ");
     this.hooks.onHeard(heard);
     clearTimeout(this.timer);
-    if (heard) this.timer = setTimeout(() => this.#flush(), this.interim ? PAUSE_INTERIM_MS : PAUSE_MS);
+    const wait = this.interim ? PAUSE_INTERIM_MS : soundsUnfinished(heard) ? PAUSE_UNFINISHED_MS : PAUSE_MS;
+    if (heard) this.timer = setTimeout(() => this.#flush(), wait);
     this.hooks.onChange();
   }
 

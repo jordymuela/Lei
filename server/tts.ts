@@ -15,8 +15,8 @@ export interface VoiceEngine {
   name: string;
   /** Never empty. */
   voices: VoiceInfo[];
-  /** Audio for one sentence. Rejects if the engine fails. */
-  speak(text: string, voice: string, signal: AbortSignal): Promise<Response>;
+  /** Audio for one sentence at `speed` (1 = normal). Rejects if the engine fails. */
+  speak(text: string, voice: string, signal: AbortSignal, speed?: number): Promise<Response>;
 }
 
 export type EngineName = "kokoro" | "elevenlabs" | "openai";
@@ -56,8 +56,8 @@ export function kokoroVoice(kokoro: Pick<Kokoro, "voices" | "synthesize">): Voic
   return {
     name: "Kokoro",
     voices: kokoro.voices,
-    async speak(text, voice, signal) {
-      const audio = await kokoro.synthesize(text, voice, signal);
+    async speak(text, voice, signal, speed = 1) {
+      const audio = await kokoro.synthesize(text, voice, signal, speed);
       return new Response(new Uint8Array(encodeWav(audio, SAMPLE_RATE)), { headers: { "content-type": "audio/wav" } });
     },
   };
@@ -68,11 +68,12 @@ function elevenLabsVoice(c: Config): VoiceEngine {
   return {
     name: "ElevenLabs",
     voices: [{ id: "elevenlabs", label: "ElevenLabs", lang: "" }],
-    async speak(text, _voice, signal) {
+    async speak(text, _voice, signal, speed = 1) {
       const res = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${encodeURIComponent(voiceId)}/stream`, {
         method: "POST",
         headers: { "xi-api-key": apiKey, "content-type": "application/json", accept: "audio/mpeg" },
-        body: JSON.stringify({ text, model_id: model }),
+        // ElevenLabs takes speeds from 0.7 to 1.2.
+        body: JSON.stringify({ text, model_id: model, voice_settings: { speed: Math.min(1.2, Math.max(0.7, speed)) } }),
         signal,
       });
       if (!res.ok || !res.body) throw new Error(`ElevenLabs answered ${res.status}`);
@@ -89,11 +90,11 @@ function openAiVoice(c: Config): VoiceEngine {
   return {
     name: new URL(url).host,
     voices: (names.length ? names : ["default"]).map((id) => ({ id, label: id, lang: "" })),
-    async speak(text, voice, signal) {
+    async speak(text, voice, signal, speed = 1) {
       const res = await fetch(endpoint, {
         method: "POST",
         headers: { "content-type": "application/json", ...(apiKey ? { authorization: `Bearer ${apiKey}` } : {}) },
-        body: JSON.stringify({ model, input: text, voice, response_format: "mp3" }),
+        body: JSON.stringify({ model, input: text, voice, speed, response_format: "mp3" }),
         signal,
       });
       if (!res.ok || !res.body) throw new Error(`${endpoint} answered ${res.status}`);

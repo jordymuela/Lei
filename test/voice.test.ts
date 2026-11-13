@@ -22,6 +22,7 @@ test("English is normalized the way a person would read it", () => {
   assert.equal(normalizeEnglish("It's 3:30 and I have $5.50."), "It's 3 30 and I have 5 dollars and 50 cents.");
   assert.equal(normalizeEnglish("Dr. Smith said 3.14 in 1990."), "Doctor Smith said 3 point 1 4 in 19 90.");
   assert.equal(normalizeEnglish("Meet at 5:00 (sharp)"), "Meet at 5 o'clock «sharp»");
+  assert.equal(normalizeEnglish("Mm, that sounds lovely. Hmmm."), "hmm, that sounds lovely. hmm.");
 });
 
 test("punctuation is kept apart so its pauses survive", () => {

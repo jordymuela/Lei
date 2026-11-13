@@ -64,6 +64,8 @@ export interface State {
 
 /** Lines streamed to the browser from POST /api/chat, one JSON object per line. */
 export type ChatEvent =
+  /** First line: the reply's id (its saved `at`), for POST /api/heard. */
+  | { type: "turn"; at: number }
   | { type: "text"; delta: string }
   | { type: "memory"; memory: Memory }
   | { type: "song"; song: Song }

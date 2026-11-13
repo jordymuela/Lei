@@ -34,10 +34,14 @@ export const config = {
   effort: EFFORTS.includes(effort) ? effort : "low",
   dataFile: path.resolve(env.LEI_DATA_FILE ?? "data/state.json"),
   publicDir: path.resolve(import.meta.dirname, "../public"),
+  hearing: {
+    /** auto (local if the models are downloaded), local, or browser (the page's own speech recognition). */
+    engine: env.LEI_HEARING ?? "auto",
+  },
   voice: {
     /** auto (the first one that's set up), kokoro, elevenlabs, openai, or browser. */
     engine: env.LEI_VOICE ?? "auto",
-    /** Where `npm run get-voice` puts the Kokoro model. */
+    /** Where `npm run get-voice` puts the models: Kokoro, and the speech recognition ones. */
     dir: expandHome(env.LEI_VOICE_DIR ?? "data/voices"),
     /** Any local server with an OpenAI-style POST /v1/audio/speech, e.g. "http://127.0.0.1:8880/v1". */
     url: env.LEI_TTS_URL ?? "",
