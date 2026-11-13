@@ -104,6 +104,15 @@ Rules for these tools:
 
 **Reminders** live in `State.reminders`. `ReminderClock` (`server/reminders.ts`) fires due ones every 10 s. It delivers them to open pages over server-sent events (`GET /api/events`), and keeps undelivered ones until a page connects.
 
+**Remote access (phones, other computers).** With `LEI_REMOTE_PORT` and `LEI_REMOTE_HOSTS` set, a second server listens on `127.0.0.1:<remote port>` for `tailscale serve` to forward to. `route(req, res, remote)` treats the two ports differently:
+- **Local port:** trusted; it's the person at the Mac.
+- **Remote port:** `refuseRemote()` requires an allowlisted Host, refuses `Tailscale-Funnel-Request`, and checks Origin and content type. Every request also needs a paired device (`findDevice()` from the `lei_device` cookie). Before pairing, only the files in `PAIRING_FILES` and `POST /api/pair` are served; other pages redirect to `/pair.html` and the API answers 401.
+- **Pairing:** codes come only from the local page (`POST /api/devices/code`, `Pairing` in `server/devices.ts`). A code is single-use, lasts five minutes and allows five tries; failures are also rate-limited across all codes.
+- **Devices:** `State.devices` stores only token hashes, and `Store.reset()` keeps devices.
+- **The WebSocket** on the remote port checks the same things in `upgrade(true)`.
+- **Audit:** approvals and device changes are appended to `audit.log` next to the state file (`server/audit.ts`), with `by` naming the device.
+- **Never** make the remote port listen on anything but loopback, skip the device check on any remote route, or accept a spoken "yes" for `danger` approvals (`onUtterance()` in `app.js`).
+
 **Request checks.** `server/security.ts` guards every `/api/` route:
 - While the server listens on localhost, the Host header must be localhost. This blocks DNS rebinding.
 - Writes need a same-origin `Origin` (or none), no `Sec-Fetch-Site: cross-site`, and a JSON content type.

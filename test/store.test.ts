@@ -10,7 +10,7 @@ const tempFile = async () => path.join(await mkdtemp(path.join(tmpdir(), "lei-")
 test("a fresh store starts empty and persists updates to disk", async () => {
   const file = await tempFile();
   const store = new Store(file);
-  assert.deepEqual(await store.load(), { profile: null, memories: [], transcript: [], corrections: [], reminders: [] });
+  assert.deepEqual(await store.load(), { profile: null, memories: [], transcript: [], corrections: [], reminders: [], devices: [] });
   await store.update((s) => addMessage(s, { role: "user", text: "hi", at: 1 }));
   const reloaded = await new Store(file).load();
   assert.equal(reloaded.transcript[0].text, "hi");
@@ -40,7 +40,21 @@ test("reset deletes the file", async () => {
   const store = new Store(file);
   await store.update((s) => addMessage(s, { role: "user", text: "x", at: 1 }));
   await store.reset();
-  assert.deepEqual(await new Store(file).load(), { profile: null, memories: [], transcript: [], corrections: [], reminders: [] });
+  assert.deepEqual(await new Store(file).load(), { profile: null, memories: [], transcript: [], corrections: [], reminders: [], devices: [] });
+});
+
+test("reset forgets the person but keeps paired devices", async () => {
+  const file = await tempFile();
+  const store = new Store(file);
+  const device = { id: "abcdef0123456789", name: "iPhone", tokenHash: "h", createdAt: 1, lastSeen: 1 };
+  await store.update((s) => {
+    addMessage(s, { role: "user", text: "x", at: 1 });
+    s.devices.push(device);
+  });
+  await store.reset();
+  const reloaded = await new Store(file).load();
+  assert.deepEqual(reloaded.transcript, []);
+  assert.deepEqual(reloaded.devices, [device]);
 });
 
 test("addCorrection ties a correction to the latest user message and skips repeats", async () => {

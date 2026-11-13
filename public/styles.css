@@ -285,3 +285,12 @@ input[type="range"] { width: 100%; accent-color: var(--ink); }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition: none !important; }
 }
+
+/* Pairing a phone (pair.html) and the device list in Settings. */
+.pair { max-width: 440px; margin: 0 auto; padding: 48px 24px; display: flex; flex-direction: column; gap: 18px; }
+.pair form { display: flex; flex-direction: column; gap: 14px; margin-top: 8px; }
+.pair .pill { align-self: flex-start; }
+.code-input { font-size: 36px; letter-spacing: .3em; }
+.devices { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; }
+.devices li { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.pair-code { font-family: var(--font-ui); font-size: 34px; letter-spacing: .25em; margin: 0; }

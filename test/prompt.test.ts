@@ -11,6 +11,7 @@ test("history starts with a user turn even though the transcript opens with the 
     memories: [],
     corrections: [],
     reminders: [],
+    devices: [],
     transcript: [
       { role: "assistant", text: "Hi Theo, I'm Wren.", at: 1 },
       { role: "user", text: "hey", at: 2 },
@@ -25,7 +26,7 @@ test("history starts with a user turn even though the transcript opens with the 
 
 test("history keeps only the most recent turns", () => {
   const transcript = Array.from({ length: 50 }, (_, i) => ({ role: (i % 2 ? "assistant" : "user") as "user" | "assistant", text: "m" + i, at: i }));
-  const msgs = historyMessages({ profile, memories: [], transcript, corrections: [], reminders: [] }, 10);
+  const msgs = historyMessages({ profile, memories: [], transcript, corrections: [], reminders: [], devices: [] }, 10);
   assert.equal(msgs.length, 10);
   assert.equal(msgs[9].content, "m49");
 });
@@ -44,6 +45,7 @@ test("context mentions notes and a long gap", () => {
       { role: "assistant", text: "Night.", at: 0 },
       { role: "user", text: "Morning!", at: 9 * hour },
     ],
+    devices: [],
   };
   const ctx = contextPrompt(state, new Date(9 * hour));
   assert.match(ctx, /- Sister Ana moved to Lisbon\./);

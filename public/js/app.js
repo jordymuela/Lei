@@ -45,6 +45,10 @@ const S = {
   voiced: null,
   /** Timings of the turn in progress, from when the person finished (see logTiming). */
   timing: null,
+  /** This page runs on the computer Lei lives on (not a paired phone). */
+  local: true,
+  /** The address phones open, when remote access is set up. */
+  remoteUrl: null,
 };
 const practice = () => S.mode === "practice";
 
@@ -80,6 +84,8 @@ const hearingHooks = {
     // While an action waits for approval, a spoken "yes" or "no" answers it.
     if (pendingApproval) {
       const answer = yesOrNo(text);
+      // A TV or someone nearby can say "yes": risky (amber) actions need a tap.
+      if (answer === true && pendingApproval.danger) return toast(t("approval.tapForRisky"));
       if (answer !== null) return decide(answer);
     }
     if (!prefs.autoListen) listener.stop();
@@ -145,6 +151,7 @@ function refresh() {
   // The browser's recognizer would catch the tail of her voice; local hearing filters her echo itself.
   else if (listener.paused) resumeTimer = setTimeout(() => !speaker.speaking && !music.current && listener.resume(), listener === ears ? 0 : 350);
 
+  keepAwake(listener.wanted);
   micBtn.setAttribute("aria-pressed", String(listener.wanted));
   micBtn.setAttribute("aria-label", t(listener.wanted ? "mic.stop" : "mic.start"));
   micBtn.classList.toggle("paused", listener.wanted && !listener.active);
@@ -169,6 +176,20 @@ function interrupt() {
   S.voiced = null;
   refresh();
 }
+
+/** Keeps a phone's screen on while the mic is on (a sleeping screen stops the mic). */
+let wakeLock = null;
+function keepAwake(on) {
+  if (!("wakeLock" in navigator)) return;
+  if (on && !wakeLock && document.visibilityState === "visible") {
+    wakeLock = navigator.wakeLock.request("screen").catch(() => null);
+    wakeLock.then((lock) => lock?.addEventListener("release", () => (wakeLock = null)));
+  } else if (!on && wakeLock) {
+    wakeLock.then((lock) => lock?.release());
+    wakeLock = null;
+  }
+}
+document.addEventListener("visibilitychange", () => document.visibilityState === "visible" && refresh());
 
 /** Cuts an interrupted reply to what was heard, here and on the server. */
 function trimToHeard(v, chars) {
@@ -444,6 +465,8 @@ function loadState(state) {
   S.transcript = state.transcript || [];
   S.corrections = state.corrections || [];
   S.mode = state.mode === "practice" ? "practice" : "companion";
+  if ("local" in state) S.local = state.local;
+  if ("remoteUrl" in state) S.remoteUrl = state.remoteUrl;
   if (state.hearing === "local" && ears.supported && listener !== ears) {
     listener.stop();
     listener = ears;
@@ -623,7 +646,7 @@ function showApproval(view, a) {
   card.append(buttons);
   if (listener.supported) card.append(h("p", "approval-note", t("approval.voice")));
   view.row.append(card);
-  pendingApproval = { id: a.id, card };
+  pendingApproval = { id: a.id, card, danger: a.danger };
   if (prefs.voiceOn) speaker.whenDone(() => speaker.say(t("approval.ask")));
   refresh();
 }
@@ -907,6 +930,47 @@ function fillVoiceSelect() {
   sel.disabled = !list.length || !prefs.voiceOn;
 }
 
+/** Settings → Devices: paired phones and computers, and (on the Mac) a code to add one. */
+async function renderDevices() {
+  const list = $("deviceList");
+  let data;
+  try {
+    data = await api.devices();
+  } catch {
+    return;
+  }
+  $("devicesNote").textContent = data.remoteUrl ? t("set.devicesNote") : t("set.devicesOff");
+  $("addDeviceBtn").hidden = !(data.local && data.remoteUrl);
+  list.replaceChildren();
+  if (!data.devices.length && data.remoteUrl) list.append(h("li", "sheet-note", t("set.noDevices")));
+  for (const d of data.devices) {
+    const when = stampText(d.lastSeen, new Date(), { today: t("stamp.today"), yesterday: t("stamp.yesterday") }).toLowerCase();
+    const text = h("span", "vtext");
+    text.append(h("span", "vname", d.name + (d.current ? ` (${t("set.thisDevice")})` : "")), h("span", "vsub", t("set.seen", { when })));
+    const remove = h("button", "pill ghost", t("set.remove"));
+    remove.type = "button";
+    remove.onclick = async () => {
+      await api.removeDevice(d.id).catch(() => {});
+      if (d.current) location.assign("/pair.html");
+      else renderDevices();
+    };
+    const li = h("li");
+    li.append(text, remove);
+    list.append(li);
+  }
+}
+
+$("addDeviceBtn").onclick = async () => {
+  const { code, expires, url } = await api.pairCode();
+  $("pairCode").textContent = code.slice(0, 3) + " " + code.slice(3);
+  $("pairSteps").textContent = t("set.pairSteps", { url });
+  $("pairBox").hidden = false;
+  setTimeout(() => {
+    $("pairBox").hidden = true;
+    renderDevices();
+  }, expires - Date.now());
+};
+
 function syncSettings() {
   $("voiceOn").checked = prefs.voiceOn;
   $("voiceOn").disabled = !speaker.available;
@@ -927,6 +991,7 @@ function syncSettings() {
       ? t("set.micNoteLocal") + " " + t(prefs.bargeIn ? "set.bargeInNote" : "set.micNote", { name })
       : t("set.micNote", { name });
   $("renameIn").value = S.profile.companionName;
+  renderDevices();
 }
 
 $("voiceOn").onchange = (e) => {

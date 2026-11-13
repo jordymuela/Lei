@@ -7,18 +7,20 @@ import path from "node:path";
 import { Readable } from "node:stream";
 import { WebSocketServer } from "ws";
 import { cutToHeard } from "../public/js/lib/sentences.js";
+import { audit } from "./audit.ts";
 import { SetupError, nameCompanion, runTurn } from "./chat.ts";
 import type { ApprovalRequest } from "./computer.ts";
 import { config } from "./config.ts";
+import { Pairing, clearedCookie, findDevice, newDevice, publicDevice, sessionCookie } from "./devices.ts";
 import { createHearing, hearingInstalled } from "./hearing.ts";
 import { ListenSession } from "./listening.ts";
 import { welcomeBackNudge } from "./prompt.ts";
 import { ReminderClock } from "./reminders.ts";
-import { refuseReason, refuseUpgrade } from "./security.ts";
+import { refuseReason, refuseRemote, refuseRemoteUpgrade, refuseUpgrade } from "./security.ts";
 import { LIMITS, Store, addMessage } from "./store.ts";
 import { createVoice, kokoroInstalled } from "./tts.ts";
 import { PauseStats } from "../public/js/lib/turns.js";
-import type { ChatEvent, Reminder, State } from "./types.ts";
+import type { ChatEvent, Device, Reminder, State } from "./types.ts";
 
 const client = new Anthropic();
 const store = new Store(config.dataFile);
@@ -60,7 +62,7 @@ const reminders = new ReminderClock(store, deliverReminder);
  * an answer or when the turn is interrupted.
  */
 const APPROVAL_TIMEOUT_MS = 120_000;
-const pendingApprovals = new Map<string, (allow: boolean) => void>();
+const pendingApprovals = new Map<string, { request: ApprovalRequest; finish: (allow: boolean) => void }>();
 
 function requestApproval(request: ApprovalRequest, send: (e: ChatEvent) => void, signal: AbortSignal): Promise<boolean> {
   if (signal.aborted) return Promise.resolve(false);
@@ -76,12 +78,13 @@ function requestApproval(request: ApprovalRequest, send: (e: ChatEvent) => void,
     const timer = setTimeout(() => finish(false), APPROVAL_TIMEOUT_MS);
     const onAbort = () => finish(false);
     signal.addEventListener("abort", onAbort, { once: true });
-    pendingApprovals.set(id, finish);
+    pendingApprovals.set(id, { request, finish });
     send({ type: "approval", approval: { id, ...request } });
   });
 }
 
 const MIME: Record<string, string> = {
+  ".webmanifest": "application/manifest+json",
   ".html": "text/html; charset=utf-8",
   ".css": "text/css; charset=utf-8",
   ".js": "text/javascript; charset=utf-8",
@@ -120,6 +123,21 @@ async function readJson(req: IncomingMessage): Promise<Record<string, unknown>> 
 }
 
 const str = (v: unknown, max: number) => (typeof v === "string" ? v.trim().slice(0, max) : "");
+
+/** Where a request came from: this computer (localhost), or a paired device through the remote port. */
+interface Caller {
+  remote: boolean;
+  device: Device | null;
+}
+const callerName = (c: Caller) => (c.device ? c.device.name : "this computer");
+
+const pairing = new Pairing();
+/** Wrong pairing codes in the last minute, across all devices: a brake on guessing. */
+let pairFailures: number[] = [];
+/** The address phones open, for the pairing instructions. */
+const remoteUrl = config.remote.port && config.remote.hosts.length ? `https://${config.remote.hosts[0]}` : null;
+/** Files the pairing page needs before a device is paired. */
+const PAIRING_FILES = new Set(["/pair.html", "/styles.css", "/js/pair.js", "/js/i18n.js", "/manifest.webmanifest", "/icons/icon-192.png", "/icons/icon-512.png", "/icons/apple-touch-icon.png"]);
 
 const publicState = (s: State) => ({
   profile: s.profile,
@@ -223,12 +241,35 @@ async function chat(req: IncomingMessage, res: ServerResponse): Promise<void> {
   res.end();
 }
 
-async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
+async function route(req: IncomingMessage, res: ServerResponse, remote: boolean): Promise<void> {
   const url = new URL(req.url ?? "/", "http://localhost");
   const p = url.pathname;
   const m = req.method ?? "GET";
+  const caller: Caller = { remote, device: null };
 
-  if (p.startsWith("/api/")) {
+  if (remote) {
+    // Everything on the remote port needs a paired device, the page itself included.
+    const refused = refuseRemote(m, req.headers, config.remote.hosts);
+    if (refused) throw new HttpError(403, refused);
+    const state = await store.load();
+    caller.device = findDevice(state, req.headers.cookie);
+    if (!caller.device) {
+      if (p === "/api/pair" && m === "POST") return pair(req, res);
+      if ((m === "GET" || m === "HEAD") && PAIRING_FILES.has(p)) return serveStatic(p, res);
+      if ((m === "GET" || m === "HEAD") && !p.startsWith("/api/")) {
+        res.writeHead(302, { location: "/pair.html", "cache-control": "no-store" });
+        return void res.end();
+      }
+      throw new HttpError(401, "Pair this device first");
+    }
+    if (Date.now() - caller.device.lastSeen > 60_000) {
+      const id = caller.device.id;
+      await store.update((s) => {
+        const d = s.devices.find((x) => x.id === id);
+        if (d) d.lastSeen = Date.now();
+      });
+    }
+  } else if (p.startsWith("/api/")) {
     const refused = refuseReason(m, req.headers, config.host);
     if (refused) throw new HttpError(403, refused);
   }
@@ -246,7 +287,35 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
     return;
   }
 
-  if (p === "/api/state" && m === "GET") return sendJson(res, 200, publicState(await store.load()));
+  if (p === "/api/state" && m === "GET") {
+    // `local`: this page runs on the computer Lei lives on (only it can show pairing codes).
+    return sendJson(res, 200, { ...publicState(await store.load()), local: !remote, remoteUrl });
+  }
+
+  if (p === "/api/devices" && m === "GET") {
+    const state = await store.load();
+    return sendJson(res, 200, { devices: state.devices.map((d) => publicDevice(d, caller.device)), remoteUrl, local: !remote });
+  }
+
+  if (p === "/api/devices/code" && m === "POST") {
+    if (remote) throw new HttpError(403, "New devices can only be added from the computer Lei runs on.");
+    if (!remoteUrl) throw new HttpError(409, "Set LEI_REMOTE_PORT and LEI_REMOTE_HOSTS first (see the README).");
+    return sendJson(res, 200, { ...pairing.newCode(), url: remoteUrl });
+  }
+
+  const deviceId = /^\/api\/devices\/([a-f0-9]{16})$/.exec(p);
+  if (deviceId && m === "DELETE") {
+    let removed: Device | null = null;
+    await store.update((s) => {
+      const i = s.devices.findIndex((d) => d.id === deviceId[1]);
+      if (i >= 0) removed = s.devices.splice(i, 1)[0];
+    });
+    if (!removed) throw new HttpError(404, "No such device");
+    audit(config.dataFile, { event: "device_removed", device: (removed as Device).name, by: callerName(caller) });
+    const self = caller.device?.id === deviceId[1];
+    res.writeHead(200, { "content-type": "application/json", "cache-control": "no-store", ...(self ? { "set-cookie": clearedCookie } : {}) });
+    return void res.end(JSON.stringify({ ok: true }));
+  }
 
   if (p === "/api/state" && m === "DELETE") return sendJson(res, 200, publicState(await store.reset()));
 
@@ -281,9 +350,11 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 
   if (p === "/api/approve" && m === "POST") {
     const body = await readJson(req);
-    const finish = pendingApprovals.get(String(body.id ?? ""));
-    if (!finish) throw new HttpError(404, "Nothing is waiting for approval with that id");
-    finish(body.allow === true);
+    const pending = pendingApprovals.get(String(body.id ?? ""));
+    if (!pending) throw new HttpError(404, "Nothing is waiting for approval with that id");
+    const allow = body.allow === true;
+    audit(config.dataFile, { event: allow ? "approved" : "declined", tool: pending.request.tool, action: pending.request.title, detail: pending.request.detail, by: callerName(caller) });
+    pending.finish(allow);
     return sendJson(res, 200, { ok: true });
   }
 
@@ -353,6 +424,26 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
   return serveStatic(p, res);
 }
 
+/** POST /api/pair on the remote port: a device trades the code shown on the Mac for its own cookie. */
+async function pair(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const now = Date.now();
+  pairFailures = pairFailures.filter((t) => now - t < 60_000);
+  if (pairFailures.length >= 10) throw new HttpError(429, "Too many tries. Wait a minute and ask the Mac for a new code.");
+  const body = await readJson(req);
+  if (!pairing.redeem(str(body.code, 12))) {
+    pairFailures.push(now);
+    throw new HttpError(403, "That code isn't right or has expired. Make a new one on the Mac.");
+  }
+  const name = str(body.name, 40) || "Phone";
+  const { device, token } = newDevice(name, now);
+  await store.update((s) => {
+    s.devices.push(device);
+  });
+  audit(config.dataFile, { event: "device_paired", device: name });
+  res.writeHead(200, { "content-type": "application/json", "cache-control": "no-store", "set-cookie": sessionCookie(token) });
+  res.end(JSON.stringify({ ok: true, name }));
+}
+
 async function serveStatic(pathname: string, res: ServerResponse): Promise<void> {
   const rel = pathname === "/" ? "index.html" : decodeURIComponent(pathname).replace(/^\/+/, "");
   const file = path.resolve(config.publicDir, rel);
@@ -363,22 +454,28 @@ async function serveStatic(pathname: string, res: ServerResponse): Promise<void>
   createReadStream(file).pipe(res);
 }
 
-const server = createServer((req, res) => {
-  route(req, res).catch((err) => {
+const handle = (remote: boolean) => (req: IncomingMessage, res: ServerResponse) => {
+  route(req, res, remote).catch((err) => {
     const status = err instanceof HttpError ? err.status : 500;
     if (status === 500) console.error(err);
     if (res.headersSent) return res.end();
     sendJson(res, status, { error: err instanceof Error ? err.message : "Server error" });
   });
-});
+};
+const server = createServer(handle(false));
+/** The port `tailscale serve` forwards your phone to; every request on it needs a paired device. */
+const remoteServer = config.remote.port && config.remote.hosts.length ? createServer(handle(true)) : null;
 
 // The mic stream for local hearing: binary frames are 16 kHz 16-bit mono audio, text frames are JSON controls.
 const sockets = new WebSocketServer({ noServer: true, maxPayload: 64 * 1024 });
-server.on("upgrade", (req, socket, head) => {
+const upgrade = (remote: boolean) => async (req: IncomingMessage, socket: import("node:stream").Duplex, head: Buffer) => {
   // An unhandled socket error would crash the server; the connection just closes.
   socket.on("error", () => {});
   const p = new URL(req.url ?? "/", "http://localhost").pathname;
-  const refused = p !== "/api/listen" ? "Not found" : !hearing ? "Local hearing isn't set up" : refuseUpgrade(req.headers, config.host);
+  let refused = p !== "/api/listen" ? "Not found" : !hearing ? "Local hearing isn't set up" : null;
+  if (!refused && remote) {
+    refused = refuseRemoteUpgrade(req.headers, config.remote.hosts) ?? (findDevice(await store.load(), req.headers.cookie) ? null : "Pair this device first");
+  } else if (!refused) refused = refuseUpgrade(req.headers, config.host);
   if (refused || !hearing) {
     socket.end(`HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\n${refused}`);
     return;
@@ -414,6 +511,16 @@ server.on("upgrade", (req, socket, head) => {
       }
     });
   });
+};
+server.on("upgrade", upgrade(false));
+remoteServer?.on("upgrade", upgrade(true));
+
+if (config.remote.port && !config.remote.hosts.length) {
+  console.warn("[remote] LEI_REMOTE_PORT is set but LEI_REMOTE_HOSTS isn't; phones can't reach Lei until both are (see the README).");
+}
+// Always on loopback: only `tailscale serve` on this computer should reach it.
+remoteServer?.listen(config.remote.port, "127.0.0.1", () => {
+  console.log(`Phones and other computers: ${remoteUrl} (tailscale serve → 127.0.0.1:${config.remote.port}); pair them in Settings → Devices.`);
 });
 
 server.listen(config.port, config.host, () => {

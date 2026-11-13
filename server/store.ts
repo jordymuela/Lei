@@ -4,7 +4,7 @@ import type { ChatMessage, Correction, Memory, Reminder, State } from "./types.t
 
 export const LIMITS = { transcript: 200, memories: 200, corrections: 300, reminders: 100, messageChars: 4000, memoryChars: 240, correctionChars: 300 };
 
-export const emptyState = (): State => ({ profile: null, memories: [], transcript: [], corrections: [], reminders: [] });
+export const emptyState = (): State => ({ profile: null, memories: [], transcript: [], corrections: [], reminders: [], devices: [] });
 
 /**
  * The whole state lives in one JSON file. Every change goes through
@@ -39,10 +39,15 @@ export class Store {
     return state;
   }
 
+  /** Forgets everything about the person; paired devices stay paired. */
   async reset(): Promise<State> {
-    this.#state = emptyState();
-    this.#writes = this.#writes.catch(() => {}).then(() => rm(this.#file, { force: true }));
-    await this.#writes;
+    const devices = (await this.load()).devices;
+    this.#state = { ...emptyState(), devices };
+    if (devices.length) await this.#persist(this.#state);
+    else {
+      this.#writes = this.#writes.catch(() => {}).then(() => rm(this.#file, { force: true }));
+      await this.#writes;
+    }
     return this.#state;
   }
 
@@ -116,5 +121,6 @@ function normalize(raw: unknown): State {
     transcript: Array.isArray(s.transcript) ? s.transcript : [],
     corrections: Array.isArray(s.corrections) ? s.corrections : [],
     reminders: Array.isArray(s.reminders) ? s.reminders : [],
+    devices: Array.isArray(s.devices) ? s.devices : [],
   };
 }

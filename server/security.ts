@@ -38,3 +38,32 @@ export function refuseUpgrade(headers: IncomingHttpHeaders, bindHost: string): s
   if (headers.origin !== `http://${host}` || headers["sec-fetch-site"] === "cross-site") return "Connections from other websites aren't allowed.";
   return null;
 }
+
+/**
+ * For the remote port, which `tailscale serve` forwards from the tailnet:
+ * the Host must be one of the names configured for it (a DNS-rebinding page
+ * can't pass that), Funnel traffic from the public internet is refused, and
+ * writes must come from the page served at that name.
+ */
+export function refuseRemote(method: string, headers: IncomingHttpHeaders, hosts: string[]): string | null {
+  if (headers["tailscale-funnel-request"]) return "Lei isn't available on the public internet.";
+  const host = headers.host ?? "";
+  if (!hosts.includes(hostname(host).toLowerCase())) return "This address isn't one Lei answers to.";
+  if (method === "GET" || method === "HEAD") return null;
+  if (headers["sec-fetch-site"] === "cross-site") return "Requests from other websites aren't allowed.";
+  const origin = headers.origin;
+  if (origin && origin !== `https://${host}` && origin !== `http://${host}`) return "Requests from other websites aren't allowed.";
+  if ((method === "POST" || method === "PATCH") && !String(headers["content-type"] ?? "").startsWith("application/json")) {
+    return "Send JSON with Content-Type: application/json.";
+  }
+  return null;
+}
+
+/** refuseRemote for a WebSocket upgrade: the Origin is required. */
+export function refuseRemoteUpgrade(headers: IncomingHttpHeaders, hosts: string[]): string | null {
+  const refused = refuseRemote("GET", headers, hosts);
+  if (refused) return refused;
+  const host = headers.host ?? "";
+  if (headers.origin !== `https://${host}` && headers.origin !== `http://${host}`) return "Connections from other websites aren't allowed.";
+  return null;
+}

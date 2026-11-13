@@ -52,6 +52,30 @@ Other notes:
 - Silero VAD is MIT. sherpa-onnx, which runs them, is Apache-2.0.
 - The English phonemizer bundles eSpeak NG, which is GPL-3.0. That's fine for personal use; check it before you ship Lei to customers.
 
+## Lei on your phone
+
+Your phone talks to Lei on your Mac through [Tailscale](https://tailscale.com), a private network between your own devices. Nothing is opened to the internet.
+
+1. **Install Tailscale** on the Mac and the phone, signed in to the same account.
+2. **Rename the Mac** to something short in the Tailscale admin console, e.g. `lei-mac`. HTTPS certificate names are public, so don't leave your real name in it.
+3. **Turn on** MagicDNS and HTTPS certificates in the admin console.
+4. **Tell Lei** in `.env`:
+   ```
+   LEI_REMOTE_PORT=3001
+   LEI_REMOTE_HOSTS=lei-mac.your-tailnet.ts.net   # the Mac's name from `tailscale status`
+   ```
+5. **Publish that port to your tailnet only:** `tailscale serve --bg 3001`. **Never use `tailscale funnel`**, which would put Lei on the public internet; Lei refuses Funnel traffic anyway.
+6. **Restart Lei and pair the phone.** On the Mac, open **Settings → Devices → Add a device**. On the phone, open `https://lei-mac.your-tailnet.ts.net` and enter the code. Then add it to the home screen.
+
+How it's protected:
+- Lei's normal port stays on localhost. The phone port only answers your Mac's tailnet name, and every request on it needs a paired device: the page, the API, the mic and reminders.
+- Each pairing code works once, for five minutes, and closes after five wrong tries.
+- Paired devices get an HttpOnly cookie. Remove one under **Settings → Devices** to sign it out at once.
+- Actions on the computer still need your OK. Risky (amber) ones need a tap: a spoken "yes" doesn't count, since a TV could say it.
+- `data/audit.log` records every approval and pairing, with the device it came from.
+
+Not there yet: notifications when the page is closed (reminders arrive when you open Lei), and a native iPhone app. The screen stays on while the mic is on, because iOS stops the mic when it sleeps.
+
 ## What it can do on your computer
 
 In companion mode, Lei is a JARVIS-style assistant for the computer it runs on. Ask it things like "how much disk space do I have?", "find the invoice from March", "make a folder for the trip and put a packing list in it", "turn the volume down", "open Spotify", "remind me to call Ana at six", or "what's the weather in Monterrey?".
@@ -113,6 +137,7 @@ All settings are environment variables, read from `.env` if it exists:
 | `LEI_MODEL` | `claude-opus-5-5` | The Claude model. Haiku 5.5 costs about 40 times less per turn; test quality before switching. |
 | `LEI_EFFORT` | `low` | How much the model thinks before answering. Higher is deeper but slower to reply. |
 | `PORT` / `HOST` | `3000` / `127.0.0.1` | Where the server listens. Keep it on localhost: anyone who can reach it spends your Claude credits. |
+| `LEI_REMOTE_PORT`, `LEI_REMOTE_HOSTS` | off | The second, localhost-only port that `tailscale serve` forwards your phone to, and the Mac's tailnet name(s). See "Lei on your phone". |
 | `LEI_DATA_FILE` | `data/state.json` | Where the name, memories and conversation are saved. |
 | `LEI_VOICE` | `auto` | Which voice speaks: `kokoro`, `elevenlabs`, `openai` (a local speech server) or `browser`. `auto` takes the first one that's set up, in that order: ElevenLabs, local server, Kokoro, browser. |
 | `LEI_HEARING` | `auto` | Speech recognition: `local` (on this computer), or `browser`. `auto` is local when the models are downloaded. |

@@ -18,6 +18,8 @@ async function call(method, url, body) {
   } catch {
     throw new ApiError("offline", "Can't reach the Lei server.");
   }
+  // A phone whose pairing was removed goes back to the pairing page.
+  if (res.status === 401) location.assign("/pair.html");
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new ApiError(data.error || "server", data.message || data.error || res.statusText);
   return data;
@@ -32,6 +34,9 @@ export const api = {
   reset: () => call("DELETE", "/api/state"),
   approve: (id, allow) => call("POST", "/api/approve", { id, allow }),
   heard: (at, chars) => call("POST", "/api/heard", { at, chars }),
+  devices: () => call("GET", "/api/devices"),
+  pairCode: () => call("POST", "/api/devices/code", {}),
+  removeDevice: (id) => call("DELETE", "/api/devices/" + encodeURIComponent(id)),
 };
 
 /**
@@ -53,6 +58,7 @@ export async function chatStream(body, { signal, onEvent }) {
     if (err.name === "AbortError") throw err;
     throw new ApiError("offline", "Can't reach the Lei server.");
   }
+  if (res.status === 401) location.assign("/pair.html");
   if (!res.ok || !res.body) {
     const data = await res.json().catch(() => ({}));
     throw new ApiError("server", data.error || res.statusText);

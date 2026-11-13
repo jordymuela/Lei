@@ -53,6 +53,16 @@ export interface Reminder {
   delivered?: boolean;
 }
 
+/** A phone or computer paired to reach Lei from elsewhere (see devices.ts). */
+export interface Device {
+  id: string;
+  name: string;
+  /** SHA-256 of the device's token; the token itself is only in its cookie. */
+  tokenHash: string;
+  createdAt: number;
+  lastSeen: number;
+}
+
 /** Everything Lei keeps between runs. One person per install. */
 export interface State {
   profile: Profile | null;
@@ -60,6 +70,7 @@ export interface State {
   transcript: ChatMessage[];
   corrections: Correction[];
   reminders: Reminder[];
+  devices: Device[];
 }
 
 /** Lines streamed to the browser from POST /api/chat, one JSON object per line. */

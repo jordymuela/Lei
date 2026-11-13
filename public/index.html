@@ -5,7 +5,13 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Lei</title>
 <meta name="color-scheme" content="light dark">
-<link rel="icon" href="data:,">
+<link rel="icon" href="/icons/icon-192.png">
+<meta name="theme-color" content="#C2463A">
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Lei">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Jost:wght@200;300;400;500&family=Newsreader:ital,opsz,wght@0,6..72,300;0,6..72,400;1,6..72,300&display=swap">
@@ -88,6 +94,17 @@
       <label class="check" for="autoListen"><input type="checkbox" id="autoListen"><span data-i18n="set.autoListen">Keep listening after each reply</span></label>
       <label class="check" for="bargeIn" id="bargeInRow" hidden><input type="checkbox" id="bargeIn"><span id="bargeInLabel"></span></label>
       <p class="sheet-note" id="micNote"></p>
+    </div>
+
+    <div class="group">
+      <h3 data-i18n="set.devices">Devices</h3>
+      <p class="sheet-note" id="devicesNote"></p>
+      <ul class="devices" id="deviceList"></ul>
+      <div id="pairBox" hidden>
+        <p class="pair-code" id="pairCode"></p>
+        <p class="sheet-note" id="pairSteps"></p>
+      </div>
+      <div class="row-btns"><button class="pill ghost" id="addDeviceBtn" type="button" data-i18n="set.addDevice" hidden>Add a device</button></div>
     </div>
 
     <div class="group">

@@ -27,6 +27,15 @@ export const config = {
   /** The folder Lei may look through and, with approval, work in. */
   workspace: expandHome(env.LEI_WORKSPACE ?? os.homedir()),
   port: Number(env.PORT ?? 3000),
+  /**
+   * Reaching Lei from a phone or another computer: a second port on
+   * localhost for `tailscale serve` to forward to, and the name(s) it's
+   * reached by (your Mac's MagicDNS name). Off unless both are set.
+   */
+  remote: {
+    port: Number(env.LEI_REMOTE_PORT ?? 0),
+    hosts: (env.LEI_REMOTE_HOSTS ?? "").split(",").map((h) => h.trim().toLowerCase().replace(/\.$/, "")).filter(Boolean),
+  },
   // Bound to localhost by default: the server spends your Claude credits for anyone who can reach it.
   host: env.HOST ?? "127.0.0.1",
   model: env.LEI_MODEL ?? "claude-opus-5-5",
